@@ -55,7 +55,7 @@ PYTHONPATH=src python -m my_tool.main --record data/sample_records.json --thresh
   "business_id": "XD-2026-0001",
   "category": "温度记录缺失",
   "severity": "高",
-  "confidence": 0.89,
+  "confidence": 0.95,
   "needs_human": false,
   "rule_version": "v1",
   "advice": "现场复测温度并补记；对当班员工做一次温度记录演练，签到不作为学会依据。",
