@@ -1,0 +1,25 @@
+# 默认参数（非机密）
+# 业务规则口径以 docs/01-业务挖掘报告.md 中的事实编号为准
+
+rule:
+  version: v1                # 规则库版本，升版不删除旧版本
+  confidence_threshold: 0.6  # 低于阈值转人工
+
+human_in_loop:
+  required_flags:            # 出现以下标记必须转人工（f44）
+    - version_conflict
+    - system_unavailable
+  notify_fields:             # 转人工必须标注的字段
+    - trigger_reason
+    - assignee
+    - confirmed_at
+
+data:
+  update_interval_minutes: 60   # 已授权业务状态每小时更新（f34）
+  stale_after_minutes: 120      # 超过一个更新周期标为待刷新
+  retention_days: 90            # 评价记录暂留 90 天（f43）
+
+boundary:
+  auto_penalty: false        # 不自动扣罚
+  auto_publish_pass: false   # 不自动发布合格结论
+  photo_as_review: false     # 照片不能代替复查

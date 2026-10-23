@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: 测试（Python ${{ matrix.python-version }}）
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11"]
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 运行测试
+        env:
+          PYTHONPATH: src
+        run: pytest -q
+
+      - name: 运行示例
+        env:
+          PYTHONPATH: src
+        run: python examples/demo.py > /dev/null && python -m my_tool.main --record data/sample_records.json > /dev/null
+
+  docs-check:
+    name: 文档链接检查
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 检查交付物是否存在
+        run: |
+          set -e
+          for f in docs/01-业务挖掘报告.md docs/01-业务挖掘报告.docx \
+                   docs/02-行业分析.docx docs/05-报价单.xlsx \
+                   docs/04-设计方案.docx docs/assets/03-流程图-现状.jpg \
+                   docs/assets/03-流程图-数智化转型后.jpg; do
+            test -f "$f" || { echo "缺少交付物: $f"; exit 1; }
+          done
+          echo "交付物齐全"

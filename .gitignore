@@ -1,0 +1,29 @@
+# 不包含
+*.py[cod]
+__pycache__/
+.venv/
+venv/
+env/
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# 密钥与环境
+.env
+.env.*
+*.pem
+*.key
+
+# 办公文件临时产物
+~$*.docx
+~$*.xlsx
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp

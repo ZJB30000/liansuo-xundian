@@ -1,0 +1,39 @@
+{
+  "records": [
+    {
+      "business_id": "XD-2026-0001",
+      "event_time": "2026-10-20 09:30",
+      "store_id": "S-018",
+      "description": "冷藏柜温度记录缺失，现场未找到当日记录",
+      "rule_version": "v1"
+    },
+    {
+      "business_id": "XD-2026-0002",
+      "event_time": "2026-10-20 10:05",
+      "store_id": "S-042",
+      "description": "培训签到齐全，但新员工仍不会温度记录",
+      "rule_version": "v1"
+    },
+    {
+      "business_id": "XD-2026-0003",
+      "event_time": "2026-10-20 11:20",
+      "store_id": "S-067",
+      "description": "整改已上传照片，未见独立复查证据",
+      "rule_version": "v1"
+    },
+    {
+      "business_id": "XD-2026-0004",
+      "event_time": "2026-10-20 14:10",
+      "store_id": "S-103",
+      "description": "操作台卫生不达标，角落有积水与油渍",
+      "rule_version": "v1"
+    },
+    {
+      "business_id": "XD2026-5",
+      "event_time": "2026/10/20",
+      "store_id": "S-120",
+      "description": "标签效期问题，存在过期食材",
+      "rule_version": "v1"
+    }
+  ]
+}
