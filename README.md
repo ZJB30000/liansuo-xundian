@@ -38,11 +38,14 @@ pip install -r requirements.txt
 ## 四、运行
 
 ```bash
-# 示例：对一条巡店记录给出归类与严重度建议
-python -m examples.demo
+# 示例：对样例巡店记录给出归类与严重度建议
+python examples/demo.py
 
-# 或作为模块运行
-python -m my_tool.main --record data/sample_records.json
+# 或作为模块运行（源码在 src/ 下，需要指定 PYTHONPATH）
+PYTHONPATH=src python -m my_tool.main --record data/sample_records.json
+
+# 调整置信度阈值
+PYTHONPATH=src python -m my_tool.main --record data/sample_records.json --threshold 0.8
 ```
 
 输出示例：
@@ -52,8 +55,11 @@ python -m my_tool.main --record data/sample_records.json
   "business_id": "XD-2026-0001",
   "category": "温度记录缺失",
   "severity": "高",
-  "confidence": 0.82,
+  "confidence": 0.89,
   "needs_human": false,
+  "rule_version": "v1",
+  "advice": "现场复测温度并补记；对当班员工做一次温度记录演练，签到不作为学会依据。",
+  "basis": ["f11", "f21"],
   "reason": "命中规则 temperature_missing；证据字段完整"
 }
 ```
@@ -61,7 +67,8 @@ python -m my_tool.main --record data/sample_records.json
 ## 五、测试
 
 ```bash
-pytest -q
+pip install -r requirements.txt
+PYTHONPATH=src pytest -q
 ```
 
 ## 六、目录结构
