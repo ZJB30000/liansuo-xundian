@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>报销智能助手 - 制度查询</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+  <!-- ================= 顶部导航栏 ================= -->
+  <nav class="navbar">
+    <div class="logo">报销智能助手<span>员工自助服务平台</span></div>
+    <div class="nav-links">
+      <a href="index.html" class="active">制度查询</a>
+      <a href="query.html">单据查询</a>
+      <a href="admin.html">管理制度</a>
+    </div>
+  </nav>
+
+  <!-- ================= 主体内容 ================= -->
+  <div class="container">
+
+    <!-- 页面标题 -->
+    <div class="page-header">
+      <h1>报销制度查询（第一层 · MVP）</h1>
+      <p>全员可见的现行有效报销制度，由行政专员乔姐统一维护。输入关键词快速检索。</p>
+    </div>
+
+    <!-- 关键词搜索框 -->
+    <div class="search-box">
+      <input type="text" id="searchInput" placeholder="输入关键词搜索，例如：差旅费、发票、流程…">
+      <button class="btn btn-primary" id="searchBtn">搜索</button>
+      <button class="btn btn-secondary" id="resetBtn">重置</button>
+    </div>
+
+    <!-- 制度列表容器（由 main.js 动态渲染） -->
+    <div class="card">
+      <div id="ruleList"></div>
+      <div class="empty" id="emptyTip" style="display:none;">未找到相关制度，换个关键词试试～</div>
+    </div>
+
+  </div>
+
+  <!-- 页脚 -->
+  <div class="footer">报销智能助手 · FDE 工程技术与创新实践课程作业</div>
+
+  <!-- 引入脚本：先数据层，再页面逻辑 -->
+  <script src="js/data.js"></script>
+  <script src="js/main.js"></script>
+</body>
+</html>

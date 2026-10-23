@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>报销智能助手 - 单据查询</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+  <!-- ================= 顶部导航栏 ================= -->
+  <nav class="navbar">
+    <div class="logo">报销智能助手<span>员工自助服务平台</span></div>
+    <div class="nav-links">
+      <a href="index.html">制度查询</a>
+      <a href="query.html" class="active">单据查询</a>
+      <a href="admin.html">管理制度</a>
+    </div>
+  </nav>
+
+  <!-- ================= 主体内容 ================= -->
+  <div class="container">
+
+    <!-- 页面标题 -->
+    <div class="page-header">
+      <h1>报销单据状态查询（第二层 · 扩展功能）</h1>
+      <p>仅支持查询本人单据。请输入工号、姓名与验证码完成身份核验，验证码由行政或财务授权发放。</p>
+    </div>
+
+    <!-- 查询表单 -->
+    <div class="card">
+      <div class="form-group">
+        <label for="empId">员工工号</label>
+        <input type="text" id="empId" placeholder="例如：E001">
+      </div>
+      <div class="form-group">
+        <label for="empName">员工姓名</label>
+        <input type="text" id="empName" placeholder="请输入本人姓名">
+      </div>
+      <div class="form-group">
+        <label for="empPin">查询验证码</label>
+        <input type="password" id="empPin" placeholder="请输入授权验证码">
+        <div class="form-tip">演示账号：E001 / 张三 / 0826（详见 README 或下方提示）</div>
+      </div>
+      <button class="btn btn-primary" id="queryBtn" style="width:100%;">查询我的单据状态</button>
+    </div>
+
+    <!-- 提示与结果区域 -->
+    <div id="result"></div>
+
+  </div>
+
+  <!-- 页脚 -->
+  <div class="footer">报销智能助手 · FDE 工程技术与创新实践课程作业</div>
+
+  <!-- 引入脚本：先数据层，再页面逻辑 -->
+  <script src="js/data.js"></script>
+  <script src="js/query.js"></script>
+</body>
+</html>

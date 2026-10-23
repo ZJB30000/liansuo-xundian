@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>报销智能助手 - 管理制度</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+  <!-- ================= 顶部导航栏 ================= -->
+  <nav class="navbar">
+    <div class="logo">报销智能助手<span>员工自助服务平台</span></div>
+    <div class="nav-links">
+      <a href="index.html">制度查询</a>
+      <a href="query.html">单据查询</a>
+      <a href="admin.html" class="active">管理制度</a>
+    </div>
+  </nav>
+
+  <!-- ================= 主体内容 ================= -->
+  <div class="container">
+
+    <!-- 页面标题 -->
+    <div class="page-header">
+      <h1>制度管理（乔姐维护入口）</h1>
+      <p>本页面仅供行政专员维护制度内容。数据保存在浏览器本地，修改后全员可在主页看到。</p>
+    </div>
+
+    <!-- 登录验证卡片（未登录时显示） -->
+    <div class="card" id="loginCard">
+      <div class="form-group">
+        <label for="adminPass">管理密码</label>
+        <input type="password" id="adminPass" placeholder="请输入管理密码">
+        <div class="form-tip">演示初始密码：123456</div>
+      </div>
+      <button class="btn btn-primary" id="loginBtn" style="width:100%;">登录管理</button>
+    </div>
+
+    <!-- 管理内容（登录后显示） -->
+    <div id="adminArea" style="display:none;">
+
+      <!-- 新增 / 编辑制度表单 -->
+      <div class="card">
+        <h3 id="formTitle" style="margin-bottom:14px;">新增制度</h3>
+        <!-- 隐藏字段：编辑时记录当前制度 id，新增时为空 -->
+        <input type="hidden" id="editId">
+
+        <div class="form-group">
+          <label for="ruleCategory">分类</label>
+          <select id="ruleCategory">
+            <option value="差旅费">差旅费</option>
+            <option value="办公用品">办公用品</option>
+            <option value="招待费">招待费</option>
+            <option value="培训费">培训费</option>
+            <option value="流程">流程</option>
+            <option value="通用">通用</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label for="ruleTitle">制度标题</label>
+          <input type="text" id="ruleTitle" placeholder="例如：差旅费报销标准">
+        </div>
+
+        <div class="form-group">
+          <label for="ruleDate">生效日期</label>
+          <input type="date" id="ruleDate">
+        </div>
+
+        <div class="form-group">
+          <label for="ruleContent">制度正文</label>
+          <textarea id="ruleContent" placeholder="请输入制度具体内容，可用换行分段…"></textarea>
+        </div>
+
+        <div style="display:flex;gap:10px;">
+          <button class="btn btn-success" id="saveBtn">保存制度</button>
+          <button class="btn btn-secondary" id="cancelEditBtn" style="display:none;">取消编辑</button>
+        </div>
+      </div>
+
+      <!-- 已有制度列表（可编辑 / 删除） -->
+      <div class="card">
+        <h3 style="margin-bottom:14px;">已有制度列表</h3>
+        <div id="adminRuleList"></div>
+      </div>
+
+      <!-- 数据维护 -->
+      <div class="card">
+        <h3 style="margin-bottom:14px;">数据维护</h3>
+        <button class="btn btn-secondary" id="restoreRulesBtn">恢复默认制度</button>
+        <button class="btn btn-secondary" id="restoreAllBtn">恢复全部默认数据（制度 + 单据）</button>
+        <button class="btn btn-danger" id="logoutBtn">退出管理</button>
+      </div>
+
+    </div>
+
+  </div>
+
+  <!-- 页脚 -->
+  <div class="footer">报销智能助手 · FDE 工程技术与创新实践课程作业</div>
+
+  <!-- 引入脚本：先数据层，再页面逻辑 -->
+  <script src="js/data.js"></script>
+  <script src="js/admin.js"></script>
+</body>
+</html>
