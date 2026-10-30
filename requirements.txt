@@ -3,5 +3,12 @@
 python-docx>=1.1.0
 openpyxl>=3.1.2
 
+# 阶段1 RAG 裸问答原型（examples/rag_prototype.py）
+openai>=1.30.0        # 所有供应商统一走 OpenAI 兼容接口
+faiss-cpu>=1.7.4      # 向量索引
+rank_bm25>=0.2.2      # 关键词检索
+jieba>=0.42.1         # 中文分词
+numpy>=1.24
+
 # 测试
 pytest>=7.4.0
