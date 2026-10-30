@@ -7,6 +7,20 @@
 ### 计划
 - 归类一致率比对口径确定后，补充一致率测评脚本
 - 节点耗时打点与 5 天闭环口径的可视化报表
+- 阶段2：FastAPI 服务化，/chat 接口复用 RAG 链路，接入企微 OAuth
+
+## [0.2.0] - 2026-10-30
+
+### 新增
+- LLM 网关 `src/my_tool/agents/llm_gateway.py`：对话/向量调用统一封装，供应商可配置（硅基流动/DeepSeek/智谱），业务代码不直接触碰外部 API
+- 知识库服务 `src/my_tool/services/kb_service.py`：制度文档 500 字切片（按标题分节 + 50 字重叠）、FAISS 向量检索 + BM25 关键词检索、RRF 混合融合取 top3
+- 制度问答提示词 `src/my_tool/agents/prompts.py`：只依据检索片段回答、必须附出处、无依据拒答（人工红线落点）
+- 阶段1 裸问答原型示例 `examples/rag_prototype.py`（命令行，无 Web）与示例制度文档 `data/巡店制度示例.md`
+- RAG 链路离线单元测试 `tests/test_rag.py`（假向量替换外部调用，CI 可跑）
+
+### 变更
+- RAG 原型核心逻辑从单脚本迁入 `src/my_tool/`（对应课程框架的 src 源码目录），examples 只保留命令行编排
+- requirements.txt 新增 openai、faiss-cpu、rank_bm25、jieba、numpy
 
 ## [0.1.0] - 2026-10-23
 
