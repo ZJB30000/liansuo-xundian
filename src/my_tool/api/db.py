@@ -63,6 +63,35 @@ CREATE TABLE IF NOT EXISTS prompt_templates (
     updated_by INTEGER,
     updated_at TEXT DEFAULT (datetime('now', 'localtime'))
 );
+CREATE TABLE IF NOT EXISTS store_records (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    business_id         TEXT UNIQUE NOT NULL,      -- 巡检单号，如 XD-2026-0001
+    store_id            TEXT NOT NULL,             -- 门店编号
+    description         TEXT NOT NULL,             -- 巡检发现问题描述
+    has_photo           INTEGER DEFAULT 1,         -- 证据：是否已附现场照片
+    has_temperature_log INTEGER DEFAULT 1,         -- 证据：是否已附温度记录
+    version_conflict    INTEGER DEFAULT 0,         -- 归类用标记：版本冲突
+    system_unavailable  INTEGER DEFAULT 0,         -- 归类用标记：系统不可用
+    created_at          TEXT DEFAULT (datetime('now', 'localtime'))
+);
+CREATE TABLE IF NOT EXISTS evidence_tokens (
+    token      TEXT PRIMARY KEY,                  -- 一次性证据令牌（validate_evidence 签发）
+    record_id  INTEGER NOT NULL REFERENCES store_records(id),
+    used       INTEGER DEFAULT 0,                 -- 一次性：建单后立即作废
+    created_at TEXT DEFAULT (datetime('now', 'localtime'))
+);
+CREATE TABLE IF NOT EXISTS rectification_drafts (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    record_id  INTEGER NOT NULL REFERENCES store_records(id),
+    token      TEXT NOT NULL,                     -- 建单使用的证据令牌（审计可追溯）
+    category   TEXT,                              -- 归类建议（classify_issue 的结果）
+    severity   TEXT,                              -- 严重度建议
+    advice     TEXT NOT NULL,                     -- 整改建议
+    status     TEXT NOT NULL DEFAULT 'draft',     -- draft=草稿 / pending_review=待人工审核
+    created_by INTEGER,                           -- 发起对话的员工
+    created_at TEXT DEFAULT (datetime('now', 'localtime')),
+    reviewed_at TEXT
+);
 """
 
 # 迁移：给老库补新列（新库由 DDL 直接建出，无需迁移）
@@ -74,6 +103,15 @@ MIGRATIONS = [
 # 种子账号（课程演示用）：admin/admin123 管理员，zhangsan/123456 员工
 SEED_USERS = [("admin", "admin123", "admin"), ("zhangsan", "123456", "staff")]
 PBKDF2_ITERS = 100_000
+
+# 种子巡检记录（课程演示用）：与 data/sample_records.json 同口径，补充证据字段。
+# XD-2026-0001 缺温度记录、XD-2026-0002 缺照片——用于演示证据校验不通过分支
+SEED_RECORDS = [
+    ("XD-2026-0001", "S-018", "冷藏柜温度记录缺失，现场未找到当日记录", 1, 0),
+    ("XD-2026-0002", "S-042", "培训签到齐全，但新员工仍不会温度记录", 0, 1),
+    ("XD-2026-0003", "S-067", "整改已上传照片，未见独立复查证据", 1, 1),
+    ("XD-2026-0004", "S-103", "操作台卫生不达标，角落有积水与油渍", 1, 1),
+]
 
 
 def hash_password(password: str, salt: str = None) -> str:
@@ -111,6 +149,7 @@ def _connect() -> sqlite3.Connection:
         if column not in cols:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
     _seed(conn)
+    _seed_records(conn)
     return conn
 
 
@@ -125,6 +164,17 @@ def _seed(conn: sqlite3.Connection) -> None:
             (username, hash_password(password), role),
         )
     conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('seeded', '1')")
+
+
+def _seed_records(conn: sqlite3.Connection) -> None:
+    """种子巡检记录：幂等（business_id 唯一约束 + OR IGNORE），老库打开自动补。"""
+    for business_id, store_id, desc, photo, temp_log in SEED_RECORDS:
+        conn.execute(
+            "INSERT OR IGNORE INTO store_records "
+            "(business_id, store_id, description, has_photo, has_temperature_log) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (business_id, store_id, desc, photo, temp_log),
+        )
 
 
 # ============================================================
@@ -210,3 +260,95 @@ def audit_query(user_id: int = None, start: str = None, end: str = None,
     with _connect() as conn:
         rows = conn.execute(sql, params).fetchall()
     return [dict(r) for r in rows]
+
+
+# ============================================================
+# 巡检记录（阶段4：智能体工具 get_store_record / classify_issue / validate_evidence）
+# ============================================================
+def find_records(business_id: str = None, store_id: str = None) -> list:
+    """按巡检单号或门店编号查巡检记录；两个条件都不传返回全部（限 50 条）。"""
+    sql, params = "SELECT * FROM store_records WHERE 1=1", []
+    if business_id:
+        sql += " AND business_id = ?"
+        params.append(business_id)
+    if store_id:
+        sql += " AND store_id = ?"
+        params.append(store_id)
+    sql += " ORDER BY id LIMIT 50"
+    with _connect() as conn:
+        rows = conn.execute(sql, params).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_record(record_id: int):
+    """按内部主键取单条巡检记录；不存在返回 None。"""
+    with _connect() as conn:
+        row = conn.execute("SELECT * FROM store_records WHERE id = ?", (record_id,)).fetchone()
+    return dict(row) if row else None
+
+
+# ============================================================
+# 证据令牌（阶段4 硬校验：一次性、10 分钟过期、归属记录绑定）
+# ============================================================
+TOKEN_TTL_MIN = 10   # 令牌有效期（分钟）
+
+
+def save_evidence_token(token: str, record_id: int) -> None:
+    """validate_evidence 通过后签发令牌。"""
+    with _connect() as conn:
+        conn.execute("INSERT INTO evidence_tokens (token, record_id) VALUES (?, ?)",
+                     (token, record_id))
+
+
+def consume_evidence_token(token: str, record_id: int) -> bool:
+    """一次性消费令牌：存在、未使用、未过期、归属记录匹配才有效，用掉即作废。
+
+    create_rectification_draft 的代码层硬校验——模型跳过 validate_evidence
+    或伪造令牌时在这里被拦下，与系统提示词约束构成双保险。
+    """
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT used, record_id, "
+            "       (julianday('now','localtime') - julianday(created_at)) * 1440.0 AS age_min "
+            "FROM evidence_tokens WHERE token = ?",
+            (token,),
+        ).fetchone()
+        if row is None or row["used"] or row["record_id"] != record_id:
+            return False
+        if row["age_min"] is None or row["age_min"] > TOKEN_TTL_MIN:
+            return False
+        conn.execute("UPDATE evidence_tokens SET used = 1 WHERE token = ?", (token,))
+    return True
+
+
+# ============================================================
+# 整改单草稿（阶段4：只建草稿不派发，终态由人工确认）
+# ============================================================
+def create_draft(record_id: int, token: str, advice: str, category: str = None,
+                 severity: str = None, created_by: int = None) -> int:
+    """创建整改单草稿（status=draft），返回草稿ID。"""
+    with _connect() as conn:
+        cur = conn.execute(
+            "INSERT INTO rectification_drafts "
+            "(record_id, token, advice, category, severity, created_by) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (record_id, token, advice, category, severity, created_by),
+        )
+    return cur.lastrowid
+
+
+def get_draft(draft_id: int):
+    """按ID取整改单草稿；不存在返回 None。"""
+    with _connect() as conn:
+        row = conn.execute("SELECT * FROM rectification_drafts WHERE id = ?", (draft_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def submit_draft(draft_id: int) -> None:
+    """草稿 → 待人工审核（只有 draft 状态可提交，调用方先检查）。"""
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE rectification_drafts SET status='pending_review', "
+            "reviewed_at=datetime('now','localtime') WHERE id = ?",
+            (draft_id,),
+        )
