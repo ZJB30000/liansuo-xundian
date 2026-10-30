@@ -67,6 +67,27 @@ def llm_chat(prompt: str, chat_cfg: dict) -> str:
     return resp.choices[0].message.content
 
 
+def llm_chat_stream(prompt: str, chat_cfg: dict):
+    """流式调用对话模型，逐段产出文本增量（★核心复用模块）。
+
+    /chat 接口的打字机效果依赖本函数；每个 yield 是一小段文字，
+    接口层把它包装成 SSE 的 delta 事件推给前端。
+    timeout=30 秒：超时抛 APITimeoutError，由接口层转成中文错误信息。
+    """
+    client = OpenAI(base_url=chat_cfg["base_url"], api_key=chat_cfg["api_key"])
+    stream = client.chat.completions.create(
+        model=chat_cfg["model"],
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0,
+        stream=True,
+        timeout=30,
+    )
+    for chunk in stream:
+        # 每个chunk可能不含正文（如只带角色信息），先判空再取增量
+        if chunk.choices and chunk.choices[0].delta and chunk.choices[0].delta.content:
+            yield chunk.choices[0].delta.content
+
+
 def embed_texts(texts: list, embed_cfg: dict) -> np.ndarray:
     """把一批文本转向量，返回 numpy 矩阵（每行一个向量，已做 L2 归一化）。
 

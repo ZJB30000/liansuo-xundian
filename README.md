@@ -48,6 +48,10 @@ PYTHONPATH=src python -m my_tool.main --record data/sample_records.json
 # 阶段1：巡店制度问答（RAG，需配置大模型 API）
 export LLM_API_KEY="你的key"        # 默认硅基流动，可 LLM_PROVIDER=deepseek/zhipu 切换
 python examples/rag_prototype.py data/巡店制度示例.md
+
+# 阶段2：网页聊天服务（SSE 流式 + 打字机效果 + 引用来源）
+PYTHONPATH=src python -m uvicorn my_tool.api.app:app --port 8000
+# 浏览器打开 http://127.0.0.1:8000
 ```
 
 输出示例：
@@ -81,14 +85,15 @@ PYTHONPATH=src pytest -q
 │   └── assets/         # 两张流程图
 ├── src/my_tool/        # 源码主目录
 │   ├── core/           # 归类建议与校验（规则版本化、置信度阈值、转人工）
-│   ├── agents/         # 智能体编排层：LLM 网关（供应商可配置）、提示词
+│   ├── agents/         # 智能体编排层：LLM 网关（流式/供应商可配置）、提示词
 │   ├── services/       # 服务层：制度知识库（切片 + FAISS/BM25 混合检索）
+│   ├── api/            # 接口层：/api/chat（SSE）、健康检查、SQLite 会话存储、聊天页
 │   └── utils/          # 通用校验工具
 ├── tests/              # 单元测试（与 src 结构对应）
 ├── examples/           # 可运行示例：demo.py（归类建议）、rag_prototype.py（制度问答）
 ├── scripts/            # 构建与部署脚本
 ├── config/             # 默认参数
-├── data/               # 样例数据：巡店记录、示例制度文档
+├── data/               # 样例数据：巡店记录、示例制度文档、SQLite 会话库
 ├── .github/            # CI 与协作模板
 └── baoxiao-assistant/  # 前一项目：报销智能助手（纯前端 MVP）
 ```

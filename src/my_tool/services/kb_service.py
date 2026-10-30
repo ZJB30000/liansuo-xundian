@@ -5,12 +5,31 @@
 /chat 接口与置信度判断都依赖本模块。
 """
 
+import os
+
 import numpy as np
 import faiss                      # 向量索引；课程项目用 faiss-cpu 即可
 import jieba                      # 中文分词，BM25 检索需要
 from rank_bm25 import BM25Okapi   # 轻量 BM25 实现
 
 from my_tool.agents.llm_gateway import embed_texts
+
+
+# ============================================================
+# 文档装载：读取制度文件 → 切片 → 标注来源文件名（★阶段2 复用）
+# ============================================================
+def load_kb_documents(paths: list) -> list:
+    """读取多个制度 markdown 文件，切片并标注来源。
+
+    返回 [{"text": 切片文本, "doc": 文件名}, ...]；来源文件名用于
+    /chat 接口的 sources 事件（前端展示“文件名+片段”）。
+    """
+    out = []
+    for p in paths:
+        with open(p, encoding="utf-8") as f:
+            for piece in chunk_markdown(f.read()):
+                out.append({"text": piece, "doc": os.path.basename(p)})
+    return out
 
 
 # ============================================================

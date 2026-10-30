@@ -27,3 +27,7 @@ Thumbs.db
 .idea/
 .vscode/
 *.swp
+
+# 运行期生成的会话数据库与本地缓存
+data/chat.db
+data/chat.db-*

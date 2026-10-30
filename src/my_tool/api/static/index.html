@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<!-- 连锁巡店助手 · 制度问答单页（原生 HTML+JS，无框架依赖） -->
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>连锁巡店助手 · 制度问答</title>
+<style>
+  /* 页面骨架：深绿表头延续作业两张流程图的配色 */
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: "PingFang SC", "Microsoft YaHei", sans-serif; background: #f0f4f1; height: 100vh; display: flex; flex-direction: column; }
+  header { background: #1e5c3a; color: #fff; padding: 14px 20px; font-size: 17px; font-weight: 600; }
+  header span { font-size: 12px; font-weight: 400; opacity: .8; margin-left: 10px; }
+  #chat { flex: 1; overflow-y: auto; padding: 18px; display: flex; flex-direction: column; gap: 14px; }
+  .msg { max-width: 76%; padding: 10px 14px; border-radius: 10px; line-height: 1.7; white-space: pre-wrap; word-break: break-word; font-size: 14px; }
+  .msg.user { align-self: flex-end; background: #1e5c3a; color: #fff; border-bottom-right-radius: 2px; }
+  .msg.assistant { align-self: flex-start; background: #fff; border: 1px solid #d7e3da; border-bottom-left-radius: 2px; }
+  .status { font-size: 12px; color: #8a9a8e; }
+  .typing::after { content: "▌"; color: #1e5c3a; animation: blink 1s step-start infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+  .sources { margin-top: 8px; padding-top: 8px; border-top: 1px dashed #d7e3da; font-size: 12px; color: #5f7266; }
+  .sources b { color: #1e5c3a; }
+  .sources li { margin: 2px 0 0 18px; }
+  .banner { align-self: center; background: #fdecec; color: #b42323; border: 1px solid #f5c2c2; padding: 8px 14px; border-radius: 8px; font-size: 13px; }
+  footer { display: flex; gap: 10px; padding: 12px 16px; background: #fff; border-top: 1px solid #d7e3da; }
+  #q { flex: 1; padding: 10px 12px; border: 1px solid #cfd9d2; border-radius: 8px; font-size: 14px; outline: none; }
+  #q:focus { border-color: #1e5c3a; }
+  #send { padding: 10px 22px; background: #1e5c3a; color: #fff; border: 0; border-radius: 8px; font-size: 14px; cursor: pointer; }
+  #send:disabled { background: #9db8a6; cursor: not-allowed; }
+  .hint { font-size: 12px; color: #8a9a8e; margin: 6px 0 0 2px; }
+  .hint em { font-style: normal; background: #e5eee8; border-radius: 4px; padding: 2px 6px; margin-right: 6px; cursor: pointer; }
+</style>
+</head>
+<body>
+<header>连锁巡店助手<span>制度问答 · 只依据制度回答并附出处</span></header>
+<div id="chat"></div>
+<footer>
+  <div style="flex:1">
+    <div class="hint">试试：<em>留样冰箱要上锁吗？</em><em>培训签到算不算学会？</em><em>整改照片能代替复查吗？</em></div>
+    <input id="q" placeholder="输入巡店制度问题，回车发送" autocomplete="off">
+  </div>
+  <button id="send">发送</button>
+</footer>
+
+<script>
+/* ---------- 元素与状态 ---------- */
+const chatBox = document.getElementById("chat");
+const qBox    = document.getElementById("q");
+const sendBtn = document.getElementById("send");
+let sessionId = localStorage.getItem("chat_session_id") || "";  // 刷新不丢会话
+let busy      = false;
+
+/* 打字机队列：delta 先入缓冲，定时器逐字上屏，形成打字机效果 */
+let pendingText = "";
+let typingTimer = null;
+
+function scrollBottom() { chatBox.scrollTop = chatBox.scrollHeight; }
+
+/* ---------- 打字机：每 30ms 上屏 2 个字，直到缓冲清空 ---------- */
+function startTyping(contentEl, onDone) {
+  clearInterval(typingTimer);
+  typingTimer = setInterval(() => {
+    if (!pendingText) {                       // 缓冲空：若流已结束则收尾
+      if (contentEl.dataset.eof === "1") {
+        clearInterval(typingTimer);
+        contentEl.classList.remove("typing");
+        if (onDone) onDone();
+      }
+      return;
+    }
+    contentEl.textContent += pendingText.slice(0, 2);   // 每帧上屏 2 字
+    pendingText = pendingText.slice(2);
+    scrollBottom();
+  }, 30);
+}
+
+/* ---------- SSE 解析：按空行切帧，每帧两行 event/data ---------- */
+function parseSse(buffer) {
+  const events = [];
+  const frames = buffer.split("\n\n");
+  for (const frame of frames.slice(0, -1)) {            // 最后一段可能不完整，留到下一轮
+    let event = "message", data = "";
+    for (const line of frame.split("\n")) {
+      if (line.startsWith("event:")) event = line.slice(6).trim();
+      if (line.startsWith("data:"))  data += line.slice(5).trim();
+    }
+    if (data) { try { events.push({ event, data: JSON.parse(data) }); } catch (e) {} }
+  }
+  return { events, rest: frames[frames.length - 1] };
+}
+
+/* ---------- 发送问题 ---------- */
+async function ask() {
+  const question = qBox.value.trim();
+  if (!question || busy) return;
+  busy = true; sendBtn.disabled = true; qBox.value = "";
+
+  addUserBubble(question);                              // 用户气泡
+  const bubble = addAssistantBubble();                  // 助手气泡（含状态行）
+  const statusEl  = bubble.querySelector(".status");
+  const contentEl = bubble.querySelector(".content");
+  contentEl.classList.add("typing");                    // 打字机光标
+
+  try {
+    const res = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_id: sessionId || undefined, question }),
+    });
+
+    if (!res.ok) {                                      // 校验/服务错误：JSON {code,message}
+      const err = await res.json().catch(() => ({ code: "INTERNAL_ERROR", message: "服务器内部错误，请联系管理员" }));
+      showError(err.message); return;
+    }
+
+    /* 流式读取 SSE */
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder("utf-8");
+    let buffer = "", streamDone = false, sources = null;
+
+    const finish = () => {
+      if (sources) renderSources(bubble, sources);      // 回答底部渲染引用来源
+      busy = false; sendBtn.disabled = false; qBox.focus();
+    };
+
+    while (!streamDone) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const { events, rest } = parseSse(buffer);
+      buffer = rest;
+      for (const ev of events) {
+        if (ev.event === "session") {                   // 记住会话ID
+          sessionId = ev.data.session_id;
+          localStorage.setItem("chat_session_id", sessionId);
+        } else if (ev.event === "status") {
+          statusEl.textContent = ev.data.text;          // “正在检索巡店制度…”
+        } else if (ev.event === "delta") {
+          statusEl.textContent = "";
+          pendingText += ev.data.text;                  // 进打字机缓冲
+        } else if (ev.event === "sources") {
+          sources = ev.data.items;
+        } else if (ev.event === "error") {
+          statusEl.textContent = "";
+          contentEl.classList.remove("typing");
+          showError(ev.data.message); streamDone = true;
+        } else if (ev.event === "done") {
+          streamDone = true;
+        }
+      }
+    }
+    contentEl.dataset.eof = "1";                        // 通知打字机可以收尾
+    if (!pendingText) { contentEl.classList.remove("typing"); finish(); }
+    else { const t = setInterval(() => { if (contentEl.dataset.eof === "1" && !pendingText) { clearInterval(t); finish(); } }, 50); }
+  } catch (e) {
+    showError("网络异常，请检查服务是否已启动");
+  }
+}
+
+/* ---------- 气泡与来源渲染 ---------- */
+function addUserBubble(text) {
+  const div = document.createElement("div");
+  div.className = "msg user"; div.textContent = text;
+  chatBox.appendChild(div); scrollBottom();
+}
+function addAssistantBubble() {
+  const div = document.createElement("div");
+  div.className = "msg assistant";
+  div.innerHTML = '<div class="content"></div><div class="status"></div><div class="sources" style="display:none"></div>';
+  chatBox.appendChild(div); scrollBottom();
+  return div;
+}
+function renderSources(bubble, items) {
+  const box = bubble.querySelector(".sources");
+  box.style.display = "block";
+  box.innerHTML = "<b>依据：</b><ul>" + items.map(s =>
+    `<li>《${s.doc}》· ${s.snippet}…</li>`).join("") + "</ul>";
+  scrollBottom();
+}
+function showError(text) {
+  const div = document.createElement("div");
+  div.className = "banner"; div.textContent = "出错了：" + text;
+  chatBox.appendChild(div); scrollBottom();
+  busy = false; sendBtn.disabled = false;
+}
+
+/* ---------- 事件绑定 ---------- */
+sendBtn.addEventListener("click", ask);
+qBox.addEventListener("keydown", e => { if (e.key === "Enter") ask(); });
+document.querySelectorAll(".hint em").forEach(el =>
+  el.addEventListener("click", () => { qBox.value = el.textContent; qBox.focus(); }));
+</script>
+</body>
+</html>

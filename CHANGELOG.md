@@ -7,7 +7,17 @@
 ### 计划
 - 归类一致率比对口径确定后，补充一致率测评脚本
 - 节点耗时打点与 5 天闭环口径的可视化报表
-- 阶段2：FastAPI 服务化，/chat 接口复用 RAG 链路，接入企微 OAuth
+- 阶段3：整改状态机（超时升级）与照片上传（对象存储）
+
+## [0.3.0] - 2026-10-30
+
+### 新增
+- 聊天服务 `src/my_tool/api/`：FastAPI 应用装配、`POST /api/chat` SSE 流式接口、`GET /api/health` 健康检查、聊天单页（原生 HTML+JS，打字机效果 + “正在检索巡店制度…”状态 + 回答底部引用来源）
+- 统一错误契约 `api/errors.py`：全部接口失败返回 `{"code","message"}`，中文信息（EMPTY_QUESTION / QUESTION_TOO_LONG / SESSION_NOT_FOUND / KB_NOT_READY / LLM_TIMEOUT / LLM_ERROR 等）
+- 会话存储 `api/db.py`：SQLite（conversations / messages，沿用阶段1表结构），每次请求携带最近 6 轮历史
+- 知识库运行时 `api/kb_runtime.py`：启动后首次访问构建 FAISS+BM25 双路索引并驻留内存，切片带来源文件名
+- LLM 网关新增流式接口 `llm_chat_stream`（打字机效果依赖）；提示词扩展多轮历史与《来源文件名》标注
+- 接口测试 `tests/test_api.py`（10 项，LLM/向量全离线假实现）
 
 ## [0.2.0] - 2026-10-30
 
