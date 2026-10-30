@@ -6,6 +6,7 @@
 """
 
 import os
+import sys
 
 import numpy as np
 import faiss                      # 向量索引；课程项目用 faiss-cpu 即可
@@ -67,8 +68,16 @@ def chunk_markdown(text: str, size: int = 500, overlap: int = 50) -> list:
 # 双路检索：FAISS 向量（语义）+ BM25（关键词），RRF 融合
 # ============================================================
 def build_vector_index(chunks: list, embed_cfg: dict):
-    """对全部切片向量化，建 FAISS 内积索引，返回 (索引, 切片向量矩阵)。"""
-    matrix = embed_texts(chunks, embed_cfg)
+    """对全部切片向量化，建 FAISS 内积索引，返回 (索引, 切片向量矩阵)。
+
+    优雅降级：向量接口不可用（如免费额度不含 embedding、欠费 429）时不抛异常，
+    返回 (None, None)，hybrid_search 自动退化为 BM25 关键词检索，服务不中断。
+    """
+    try:
+        matrix = embed_texts(chunks, embed_cfg)
+    except Exception as e:                             # 429 / 余额不足 / 网络失败都走这里
+        print(f"[知识库] 向量化不可用，已退化为关键词检索：{e}", file=sys.stderr)
+        return None, None
     index = faiss.IndexFlatIP(matrix.shape[1])         # 内积索引：配合归一化向量即余弦相似度
     index.add(matrix)
     return index, matrix
@@ -98,9 +107,17 @@ def hybrid_search(query: str, index, bm25, chunks: list, embed_cfg: dict, k: int
 
     RRF 公式：得分 = Σ 1/(60+名次)。只用名次不用原始分，
     避免向量余弦分和 BM25 分数值量级不同没法直接相加的问题。
+    降级规则：index 为 None 或问题向量调用失败时，只走 BM25 关键词检索。
     """
-    vec_hits = vector_search(query, index, chunks, embed_cfg, k=5)
+    vec_hits = []
+    if index is not None:
+        try:
+            vec_hits = vector_search(query, index, chunks, embed_cfg, k=5)
+        except Exception:
+            vec_hits = []                              # 问题向量化失败不致命，退单路
     kw_hits = bm25_search(query, bm25, chunks, k=5)
+    if not vec_hits:                                   # 无向量路：直接用关键词名次
+        return kw_hits[:k]
     rrf = {}
     for rank, (idx, _) in enumerate(vec_hits):         # 向量路按名次计分
         rrf[idx] = rrf.get(idx, 0) + 1 / (60 + rank + 1)

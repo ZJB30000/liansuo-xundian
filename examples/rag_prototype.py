@@ -47,7 +47,10 @@ def main():
 
     print("[3/3] 就绪。输入巡店制度问题，回车提问，输入 q 退出。")
     while True:
-        query = input("\n问题> ").strip()
+        try:
+            query = input("\n问题> ").strip()
+        except EOFError:                       # 管道输入结束（如 echo xx | python ...）时优雅退出
+            break
         if not query:
             continue
         if query.lower() == "q":
