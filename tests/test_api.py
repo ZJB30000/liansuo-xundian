@@ -1,69 +1,18 @@
-"""阶段2 接口层测试：不访问真实大模型，LLM 与向量全部替换为假实现。
+"""阶段2/3 员工问答接口测试：登录、SSE 事件顺序、来源、落库、错误契约。
 
-覆盖：健康检查、首页、SSE 事件顺序、来源展示、消息落库、历史截取、
-错误契约（空问题/超长/会话不存在/非法JSON/大模型超时）。
-与 src/my_tool/api 结构对应。
+LLM 与向量全部替换为假实现（见 conftest），不访问真实大模型。
 """
 
 import json
 import os
-import sys
+import sqlite3
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+import pytest  # noqa: F401
+from openai import APITimeoutError
 
-import numpy as np  # noqa: E402
-import pytest  # noqa: E402
-from fastapi.testclient import TestClient  # noqa: E402
-from openai import APITimeoutError  # noqa: E402
-
-from my_tool.agents import llm_gateway  # noqa: E402
-from my_tool.api import db  # noqa: E402
-from my_tool.api.app import create_app  # noqa: E402
-from my_tool.services import kb_service  # noqa: E402
-
-DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "data")
-
-
-def _fake_embed(texts, cfg=None):
-    """确定性假向量：相同文本得到相同向量。"""
-    rng = np.random.RandomState(42)
-    v = rng.rand(len(texts), 16).astype("float32")
-    return v / np.linalg.norm(v, axis=1, keepdims=True)
-
-
-def _fake_stream(prompt, chat_cfg):
-    """假流式回答：三段输出，模拟 LLM 逐段生成。"""
-    yield "按制度要求，"
-    yield "留样必须冷藏并上锁，"
-    yield "钥匙由店长保管。"
-
-
-@pytest.fixture()
-def client(tmp_path, monkeypatch):
-    """每个测试独立的 app + 独立 SQLite，全部外部依赖替换为假实现。"""
-    monkeypatch.setenv("CHAT_DB", str(tmp_path / "chat.db"))      # 测试库隔离
-    monkeypatch.setenv("KB_DIR", DATA_DIR)                        # 指向真实示例制度
-    monkeypatch.setattr(kb_service, "embed_texts", _fake_embed)   # 向量化离线
-    monkeypatch.setattr(llm_gateway, "llm_chat_stream", _fake_stream)  # LLM 离线
-    monkeypatch.setattr(
-        llm_gateway, "load_config",
-        lambda: ({"base_url": "x", "model": "m", "api_key": "k"},
-                 {"base_url": "x", "model": "e", "api_key": "k"}))
-    return TestClient(create_app())
-
-
-def _parse_sse(text):
-    """把 SSE 文本解析成 [(event, data_dict), ...]，供断言事件顺序。"""
-    out = []
-    for frame in text.strip().split("\n\n"):
-        event, data = None, None
-        for line in frame.split("\n"):
-            if line.startswith("event:"):
-                event = line[6:].strip()
-            if line.startswith("data:"):
-                data = json.loads(line[5:].strip())
-        out.append((event, data))
-    return out
+from my_tool.agents import llm_gateway
+from my_tool.api import db
+from tests.conftest import auth, parse_sse
 
 
 def test_home_serves_html(client):
@@ -77,24 +26,29 @@ def test_health_ready(client):
     assert res.status_code == 200
     body = res.json()
     assert body["code"] == "OK"
-    assert body["kb_chunks"] >= 5
+    assert body["kb_chunks"] >= 5                 # 启动时已播种示例制度
     assert "巡店制度示例.md" in body["kb_docs"][0]
 
 
-def test_chat_stream_happy_path(client):
+def test_chat_requires_login(client):
+    """阶段3：未登录调 /api/chat → 401 中文错误。"""
     res = client.post("/api/chat", json={"question": "留样冰箱要上锁吗"})
+    assert res.status_code == 401
+    assert res.json()["code"] == "UNAUTHORIZED"
+
+
+def test_chat_stream_happy_path(client, staff_token):
+    res = client.post("/api/chat", json={"question": "留样冰箱要上锁吗"}, headers=auth(staff_token))
     assert res.status_code == 200
     assert res.headers["content-type"].startswith("text/event-stream")
 
-    events = _parse_sse(res.text)
+    events = parse_sse(res.text)
     kinds = [e for e, _ in events]
-    # 事件顺序：session 开头，done 结尾，中间有 status/delta/sources
-    assert kinds[0] == "session"
-    assert kinds[-1] == "done"
+    assert kinds[0] == "session"                  # session 开头
+    assert kinds[-1] == "done"                    # done 结尾
     for need in ("status", "delta", "sources"):
         assert need in kinds
 
-    # 校验各事件内容
     session_id = events[0][1]["session_id"]
     assert session_id
     assert any("正在检索巡店制度" in d["text"] for e, d in events if e == "status")
@@ -105,62 +59,71 @@ def test_chat_stream_happy_path(client):
     assert len(src["snippet"]) > 0                  # 来源带片段
 
 
-def test_chat_persists_messages(client):
-    client.post("/api/chat", json={"question": "留样冰箱要上锁吗"})
-    import sqlite3
+def test_chat_prompt_uses_template_and_suffix(client, staff_token):
+    """系统提示词 = 数据库模板 + 不可违背的输出约束。"""
+    client.post("/api/chat", json={"question": "留样要多少克"}, headers=auth(staff_token))
+    from tests.conftest import CAPTURED_PROMPTS
+    assert len(CAPTURED_PROMPTS) == 1
+    assert "巡店制度" in CAPTURED_PROMPTS[0]        # 默认模板（巡店口径）
+    assert "输出约束" in CAPTURED_PROMPTS[0]        # 红线后缀已拼接
+
+
+def test_chat_persists_messages(client, staff_token):
+    client.post("/api/chat", json={"question": "留样冰箱要上锁吗"}, headers=auth(staff_token))
     conn = sqlite3.connect(str(db.db_path()))
     rows = conn.execute("SELECT role, content, sources_json FROM messages ORDER BY id").fetchall()
     conn.close()
-    assert rows[0][0] == "user" and "留样" in rows[0][1]     # 用户消息已落库
+    assert rows[0][0] == "user" and "留样" in rows[0][1]                 # 用户消息已落库
     assert rows[1][0] == "assistant" and "巡店制度示例.md" in rows[1][2]  # 助手消息含来源
 
 
 def test_recent_messages_trims_to_12(client, tmp_path):
     sid = db.create_conversation()
-    for i in range(14):                       # 14 条消息
+    for i in range(14):
         db.add_message(sid, "user", f"问题{i}")
-    history = db.recent_messages(sid, 12)     # 只取最近 12 条
+    history = db.recent_messages(sid, 12)     # 只取最近 12 条（6 轮）
     assert len(history) == 12
-    assert history[-1]["content"] == "问题13"  # 正序，最后一条最新
+    assert history[-1]["content"] == "问题13"
 
 
-def test_empty_question(client):
-    res = client.post("/api/chat", json={"question": "   "})
+def test_empty_question(client, staff_token):
+    res = client.post("/api/chat", json={"question": "   "}, headers=auth(staff_token))
     assert res.status_code == 400
     body = res.json()
     assert body["code"] == "EMPTY_QUESTION"
     assert body["message"] == "问题不能为空"
 
 
-def test_question_too_long(client):
-    res = client.post("/api/chat", json={"question": "长" * 501})
+def test_question_too_long(client, staff_token):
+    res = client.post("/api/chat", json={"question": "长" * 501}, headers=auth(staff_token))
     assert res.status_code == 400
     assert res.json()["code"] == "QUESTION_TOO_LONG"
 
 
-def test_session_not_found(client):
-    res = client.post("/api/chat", json={"session_id": "not-exist", "question": "留样要多少克"})
+def test_session_not_found(client, staff_token):
+    res = client.post("/api/chat", json={"session_id": "not-exist", "question": "留样要多少克"},
+                      headers=auth(staff_token))
     assert res.status_code == 404
     body = res.json()
     assert body["code"] == "SESSION_NOT_FOUND"
     assert "会话不存在" in body["message"]
 
 
-def test_bad_json(client):
+def test_bad_json(client, staff_token):
     res = client.post("/api/chat", content="不是json",
-                      headers={"Content-Type": "application/json"})
+                      headers={"Content-Type": "application/json", **auth(staff_token)})
     assert res.status_code == 400
     assert res.json()["code"] == "BODY_NOT_JSON"
 
 
-def test_llm_timeout_returns_sse_error(client, monkeypatch):
+def test_llm_timeout_returns_sse_error(client, staff_token, monkeypatch):
     """大模型超时 → SSE error 事件（中文），而不是 HTTP 错误。"""
     def raise_timeout(prompt, cfg):
         raise APITimeoutError(request=__import__("httpx").Request("POST", "http://test"))
     monkeypatch.setattr(llm_gateway, "llm_chat_stream", raise_timeout)
 
-    res = client.post("/api/chat", json={"question": "晨检记录谁负责"})
-    events = _parse_sse(res.text)
+    res = client.post("/api/chat", json={"question": "晨检记录谁负责"}, headers=auth(staff_token))
+    events = parse_sse(res.text)
     err = [d for e, d in events if e == "error"][0]
     assert err["code"] == "LLM_TIMEOUT"
     assert err["message"] == "大模型响应超时，请重试"

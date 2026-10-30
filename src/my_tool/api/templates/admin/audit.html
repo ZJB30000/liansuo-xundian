@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<!-- 对话审计页：按员工/日期筛选，疑似违规问答红色标记 -->
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>对话审计 · 连锁巡店助手</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: "PingFang SC", "Microsoft YaHei", sans-serif; background: #f0f4f1; min-height: 100vh; }
+  header { background: #1e5c3a; color: #fff; padding: 14px 22px; display: flex; justify-content: space-between; align-items: center; }
+  .brand { font-size: 16px; font-weight: 600; }
+  nav a { color: #cfe3d6; margin-left: 18px; text-decoration: none; font-size: 14px; }
+  nav a.on { color: #fff; border-bottom: 2px solid #fff; padding-bottom: 2px; }
+  main { max-width: 960px; margin: 26px auto; padding: 0 16px; }
+  .card { background: #fff; border: 1px solid #d7e3da; border-radius: 10px; padding: 20px; margin-bottom: 18px; }
+  h2 { font-size: 16px; margin-bottom: 12px; color: #1e5c3a; }
+  .filters { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; font-size: 14px; }
+  .filters label { color: #5f7266; }
+  input[type=date], input[type=number] { padding: 6px 8px; border: 1px solid #cfd9d2; border-radius: 6px; }
+  .btn { background: #1e5c3a; color: #fff; border: 0; border-radius: 6px; padding: 8px 18px; cursor: pointer; font-size: 14px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { padding: 8px 10px; border-bottom: 1px solid #e4ece6; text-align: left; }
+  th { color: #5f7266; font-weight: 500; }
+  .flag { background: #fdecec; color: #b42323; border-radius: 4px; padding: 2px 8px; font-size: 12px; }
+  .q { max-width: 380px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .empty { color: #8a9a8e; font-size: 13px; padding: 8px 0; }
+</style>
+</head>
+<body>
+{% import "admin/_base.html" as base %}
+{{ base.admin_header("audit") }}
+<main>
+  <div class="card">
+    <h2>对话审计</h2>
+    <div class="filters">
+      <label>员工ID</label><input type="number" id="userId" style="width:90px" placeholder="留空=全部">
+      <label>从</label><input type="date" id="start">
+      <label>到</label><input type="date" id="end">
+      <label><input type="checkbox" id="flagged"> 仅看疑似违规</label>
+      <button class="btn" onclick="load()">查询</button>
+    </div>
+  </div>
+  <div class="card">
+    <table id="tbl">
+      <tr><th>时间</th><th>员工</th><th>首问</th><th>消息数</th><th>疑似违规</th></tr>
+    </table>
+    <div class="empty" id="empty">加载中…</div>
+  </div>
+</main>
+<script>
+  async function load() {
+    const params = new URLSearchParams();
+    if (document.getElementById("userId").value) params.set("user_id", document.getElementById("userId").value);
+    if (document.getElementById("start").value) params.set("start", document.getElementById("start").value);
+    if (document.getElementById("end").value) params.set("end", document.getElementById("end").value);
+    if (document.getElementById("flagged").checked) params.set("flagged", "1");
+
+    const body = await api("/api/admin/audit?" + params.toString());
+    const tbl = document.getElementById("tbl");
+    // 清掉旧行，只留表头
+    while (tbl.rows.length > 1) tbl.deleteRow(1);
+    const items = body.items || [];
+    document.getElementById("empty").textContent = items.length ? "" : "没有符合条件的会话记录";
+    for (const it of items) {
+      const row = tbl.insertRow(-1);
+      row.innerHTML =
+        `<td>${it.created_at}</td>` +
+        `<td>${it.username || "未知员工"}</td>` +
+        `<td class="q" title="${(it.first_question || "").replace(/"/g, "&quot;")}">${it.first_question || "-"}</td>` +
+        `<td>${it.message_count ?? 0}</td>` +
+        `<td>${it.flagged_count > 0 ? `<span class="flag">疑似违规 ×${it.flagged_count}</span>` : "—"}</td>`;
+    }
+  }
+  load();   // 进入页面即加载全部
+</script>
+</body>
+</html>

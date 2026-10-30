@@ -1,25 +1,27 @@
-"""POST /api/chat：SSE 流式问答接口（★本阶段新增核心）。
+"""POST /api/chat：SSE 流式问答接口（★阶段3 改造：登录鉴权+违规标记+库内模板）。
 
-流程：校验 → 定位/新建会话 → 存用户消息 → 检索巡店制度 →
-流式调大模型（delta 事件）→ 存助手消息 → sources/done 事件。
-任何环节出错都推 SSE 的 error 事件（中文），保证前端永远能渲染。
+流程：JWT 鉴权 → 校验 → 定位/新建会话（归属员工）→ 存用户消息（触发疑似
+违规扫描）→ 检索巡店制度 → 流式调大模型 → 存助手消息 → sources/done 事件。
+系统提示词从数据库读取（管理员可改，立即生效）；输出格式红线拼在模板后。
 """
 
 import json
 from collections.abc import Generator
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 from openai import APITimeoutError
 
 from my_tool.agents import llm_gateway
-from my_tool.agents.prompts import build_prompt
-from my_tool.api import db
+from my_tool.agents.prompts import RULE_SUFFIX, build_prompt
+from my_tool.api import db, kb_store
 from my_tool.api.errors import ApiError
 from my_tool.api.kb_runtime import ensure_kb
+from my_tool.api.moderation import scan
+from my_tool.api.security import get_current_user
 from my_tool.services.kb_service import hybrid_search
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(get_current_user)])   # 整组接口需登录
 
 MAX_QUESTION = 500     # 问题长度上限（字）
 HISTORY_ROUNDS = 6     # 携带最近 6 轮历史（12 条消息）
@@ -43,10 +45,10 @@ def _validate_question(raw) -> str:
     return question
 
 
-def _locate_session(raw) -> str:
-    """处理会话ID：带ID则校验存在性，不带则新建。"""
+def _locate_session(raw, user_id: int) -> str:
+    """处理会话ID：带ID则校验存在性，不带则新建（归属当前员工）。"""
     if raw is None:
-        return db.create_conversation()
+        return db.create_conversation(user_id)
     if not isinstance(raw, str) or not raw:
         raise ApiError(400, "INVALID_PARAM", "session_id 格式不正确")
     if not db.has_conversation(raw):
@@ -54,7 +56,7 @@ def _locate_session(raw) -> str:
     return raw
 
 
-def _event_stream(question: str, sid: str, kb, chat_cfg: dict) -> Generator[str, None, None]:
+def _event_stream(question: str, sid: str, kb, chat_cfg: dict, rules: str) -> Generator[str, None, None]:
     """SSE 主体：一帧帧 yield 给前端。"""
     yield _sse("session", {"session_id": sid})
     yield _sse("status", {"text": "正在检索巡店制度…"})
@@ -64,7 +66,7 @@ def _event_stream(question: str, sid: str, kb, chat_cfg: dict) -> Generator[str,
     yield _sse("status", {"text": "正在生成回答…"})
 
     history = db.recent_messages(sid, HISTORY_ROUNDS * 2)
-    prompt = build_prompt(question, hits, kb.chunks, history)
+    prompt = build_prompt(question, hits, kb.chunks, history, rules=rules)
 
     answer = ""
     try:
@@ -94,7 +96,7 @@ def _event_stream(question: str, sid: str, kb, chat_cfg: dict) -> Generator[str,
 
 
 @router.post("/api/chat")
-async def chat(request: Request):
+async def chat(request: Request, user: dict = Depends(get_current_user)):
     """对话入口：先完成全部校验（错误以 HTTP 状态码返回），再进入 SSE。"""
     try:
         body = await request.json()
@@ -104,12 +106,12 @@ async def chat(request: Request):
         raise ApiError(400, "INVALID_PARAM", "请求体必须是 JSON 对象")
 
     question = _validate_question(body.get("question"))
-    sid = _locate_session(body.get("session_id"))
+    sid = _locate_session(body.get("session_id"), user["user_id"])
 
     try:
-        ensure_kb(request.app)          # 首次访问时构建知识库（懒加载）
+        ensure_kb(request.app)          # 首次访问/版本变化时构建知识库（懒加载）
     except Exception:
-        raise ApiError(503, "KB_NOT_READY", "知识库未就绪，请检查 LLM_API_KEY 与 data/ 制度文档")
+        raise ApiError(503, "KB_NOT_READY", "知识库未就绪，请检查 LLM_API_KEY 与制度文档")
     kb = request.app.state.kb
 
     try:
@@ -119,9 +121,13 @@ async def chat(request: Request):
     except SystemExit:
         raise ApiError(503, "LLM_NOT_CONFIGURED", "未配置向量模型（EMBED_BASE_URL / EMBED_MODEL）")
 
-    db.add_message(sid, "user", question)   # 用户消息先落库，保证历史完整
+    # 系统提示词：数据库里管理员维护的模板 + 不可违背的输出红线
+    rules = kb_store.get_prompt() + RULE_SUFFIX
+
+    # 用户消息落库：命中“规避检查”关键词则标记疑似违规（审计页标红）
+    db.add_message(sid, "user", question, flagged=scan(question))
     return StreamingResponse(
-        _event_stream(question, sid, kb, chat_cfg),
+        _event_stream(question, sid, kb, chat_cfg, rules),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )

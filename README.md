@@ -49,9 +49,11 @@ PYTHONPATH=src python -m my_tool.main --record data/sample_records.json
 export LLM_API_KEY="你的key"        # 默认硅基流动，可 LLM_PROVIDER=deepseek/zhipu 切换
 python examples/rag_prototype.py data/巡店制度示例.md
 
-# 阶段2：网页聊天服务（SSE 流式 + 打字机效果 + 引用来源）
+# 阶段2+3：网页聊天 + 管理后台（登录、知识库、提示词模板、审计）
 PYTHONPATH=src python -m uvicorn my_tool.api.app:app --port 8000
-# 浏览器打开 http://127.0.0.1:8000
+# 浏览器打开 http://127.0.0.1:8000 → 登录页
+#   员工账号 zhangsan / 123456 → 巡店制度问答
+#   管理员账号 admin / admin123 → /admin/kb 知识库管理、/admin/prompts 提示词模板、/admin/audit 对话审计
 ```
 
 输出示例：
@@ -87,7 +89,7 @@ PYTHONPATH=src pytest -q
 │   ├── core/           # 归类建议与校验（规则版本化、置信度阈值、转人工）
 │   ├── agents/         # 智能体编排层：LLM 网关（流式/供应商可配置）、提示词
 │   ├── services/       # 服务层：制度知识库（切片 + FAISS/BM25 混合检索）
-│   ├── api/            # 接口层：/api/chat（SSE）、健康检查、SQLite 会话存储、聊天页
+│   ├── api/            # 接口层：登录鉴权(JWT)、/api/chat(SSE)、知识库/提示词/审计管理、SSR 后台页
 │   └── utils/          # 通用校验工具
 ├── tests/              # 单元测试（与 src 结构对应）
 ├── examples/           # 可运行示例：demo.py（归类建议）、rag_prototype.py（制度问答）

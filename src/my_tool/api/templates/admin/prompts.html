@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<!-- 提示词模板管理页：SSR 渲染当前模板；保存后立即对问答生效 -->
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>提示词模板 · 连锁巡店助手</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: "PingFang SC", "Microsoft YaHei", sans-serif; background: #f0f4f1; min-height: 100vh; }
+  header { background: #1e5c3a; color: #fff; padding: 14px 22px; display: flex; justify-content: space-between; align-items: center; }
+  .brand { font-size: 16px; font-weight: 600; }
+  nav a { color: #cfe3d6; margin-left: 18px; text-decoration: none; font-size: 14px; }
+  nav a.on { color: #fff; border-bottom: 2px solid #fff; padding-bottom: 2px; }
+  main { max-width: 860px; margin: 26px auto; padding: 0 16px; }
+  .card { background: #fff; border: 1px solid #d7e3da; border-radius: 10px; padding: 20px; margin-bottom: 18px; }
+  h2 { font-size: 16px; margin-bottom: 12px; color: #1e5c3a; }
+  textarea { width: 100%; height: 130px; padding: 12px; border: 1px solid #cfd9d2; border-radius: 8px; font-size: 14px; line-height: 1.7; resize: vertical; }
+  .btn { background: #1e5c3a; color: #fff; border: 0; border-radius: 6px; padding: 8px 20px; cursor: pointer; font-size: 14px; margin-top: 10px; }
+  .meta { font-size: 12px; color: #8a9a8e; margin-top: 8px; }
+  .note { font-size: 13px; color: #5f7266; line-height: 1.8; }
+  .msg { margin-top: 10px; font-size: 13px; }
+  .ok { color: #1e5c3a; } .err { color: #b42323; }
+</style>
+</head>
+<body>
+{% import "admin/_base.html" as base %}
+{{ base.admin_header("prompt") }}
+<main>
+  <div class="card">
+    <h2>系统提示词模板</h2>
+    <textarea id="tpl">{{ content }}</textarea>
+    <div class="note">
+      说明：修改保存后<b>立即对员工问答生效</b>（存数据库，不写死在代码里），历史版本留痕。
+      以下输出约束为固定红线，不随模板修改：<br>
+      · 回答末尾必须注明引用片段（依据：制度片段N）；<br>
+      · 制度片段不足时回复：制度中未找到依据。
+    </div>
+    <button class="btn" onclick="save()">保存模板</button>
+    <div class="msg" id="msg">当前版本更新时间：{{ updated_at or "默认模板（尚未修改过）" }}</div>
+  </div>
+</main>
+<script>
+  async function save() {
+    const msg = document.getElementById("msg");
+    try {
+      const body = await api("/api/admin/prompt", {
+        method: "PUT",
+        body: JSON.stringify({ content: document.getElementById("tpl").value }),
+      });
+      msg.textContent = body.message + "（版本ID " + body.version_id + "）";
+      msg.className = "msg ok";
+    } catch (e) { msg.textContent = "保存失败：" + e.message; msg.className = "msg err"; }
+  }
+</script>
+</body>
+</html>

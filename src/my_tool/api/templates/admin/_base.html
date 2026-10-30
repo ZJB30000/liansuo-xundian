@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<!-- 管理后台公共头部：Jinja2 宏。页面加载时检查登录态，管理员放行。 -->
+{% macro admin_header(active) -%}
+<header>
+  <span class="brand">连锁巡店助手 · 管理后台</span>
+  <nav>
+    <a href="/admin/kb" class="{{ 'on' if active == 'kb' }}">知识库</a>
+    <a href="/admin/prompts" class="{{ 'on' if active == 'prompt' }}">提示词模板</a>
+    <a href="/admin/audit" class="{{ 'on' if active == 'audit' }}">对话审计</a>
+    <a href="/" >返回问答</a>
+    <a href="javascript:void(0)" onclick="logout()">退出</a>
+  </nav>
+</header>
+<script>
+  // 页面级登录引导：接口层才是真正的权限校验，这里只做跳转
+  (function () {
+    const token = localStorage.getItem("chat_token");
+    const role = localStorage.getItem("chat_role");
+    if (!token) { location.href = "/login"; return; }
+    if (role !== "admin") { alert("仅管理员可访问管理后台"); location.href = "/"; }
+  })();
+  function logout() {
+    localStorage.removeItem("chat_token");
+    localStorage.removeItem("chat_role");
+    location.href = "/login";
+  }
+  // 统一带鉴权头的 fetch 封装
+  async function api(url, options = {}) {
+    const res = await fetch(url, {
+      ...options,
+      headers: { "Content-Type": "application/json", "Authorization": "Bearer " + localStorage.getItem("chat_token"), ...(options.headers || {}) },
+    });
+    if (res.status === 401 || res.status === 403) { alert("登录已过期或无权限，请重新登录"); location.href = "/login"; throw new Error("unauthorized"); }
+    const body = await res.json().catch(() => ({ message: "服务器异常" }));
+    if (!res.ok) throw new Error(body.message || "请求失败");
+    return body;
+  }
+</script>
+{%- endmacro %}

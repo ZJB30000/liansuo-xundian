@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<!-- 登录页：员工/管理员共用，登录后按角色跳转 -->
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>登录 · 连锁巡店助手</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: "PingFang SC", "Microsoft YaHei", sans-serif; background: #1e5c3a; min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+  .box { background: #fff; border-radius: 12px; padding: 34px 36px; width: 360px; }
+  h1 { font-size: 18px; color: #1e5c3a; margin-bottom: 6px; }
+  .sub { font-size: 12px; color: #8a9a8e; margin-bottom: 22px; }
+  input { width: 100%; padding: 11px 12px; border: 1px solid #cfd9d2; border-radius: 8px; font-size: 14px; margin-bottom: 12px; outline: none; }
+  input:focus { border-color: #1e5c3a; }
+  button { width: 100%; padding: 11px; background: #1e5c3a; color: #fff; border: 0; border-radius: 8px; font-size: 15px; cursor: pointer; }
+  button:disabled { background: #9db8a6; }
+  .msg { margin-top: 12px; font-size: 13px; min-height: 18px; }
+  .err { color: #b42323; }
+  .tip { margin-top: 16px; font-size: 12px; color: #8a9a8e; line-height: 1.7; border-top: 1px dashed #e4ece6; padding-top: 12px; }
+</style>
+</head>
+<body>
+<div class="box">
+  <h1>连锁巡店助手</h1>
+  <div class="sub">巡店制度问答 · 管理后台统一入口</div>
+  <input id="username" placeholder="用户名" autocomplete="username">
+  <input id="password" type="password" placeholder="密码" autocomplete="current-password">
+  <button id="btn" onclick="doLogin()">登 录</button>
+  <div class="msg" id="msg"></div>
+  <div class="tip">演示账号：管理员 admin / admin123；员工 zhangsan / 123456<br>密码错误时提示中文错误信息</div>
+</div>
+<script>
+  // 已登录直接按角色跳转
+  if (localStorage.getItem("chat_token")) {
+    location.href = localStorage.getItem("chat_role") === "admin" ? "/admin/kb" : "/";
+  }
+  async function doLogin() {
+    const btn = document.getElementById("btn"), msg = document.getElementById("msg");
+    btn.disabled = true; msg.textContent = ""; msg.className = "msg";
+    try {
+      const res = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          username: document.getElementById("username").value.trim(),
+          password: document.getElementById("password").value,
+        }),
+      });
+      const body = await res.json().catch(() => ({ message: "服务器异常" }));
+      if (!res.ok) throw new Error(body.message || "登录失败");
+      localStorage.setItem("chat_token", body.token);
+      localStorage.setItem("chat_role", body.role);
+      localStorage.setItem("chat_username", body.username);
+      location.href = body.role === "admin" ? "/admin/kb" : "/";
+    } catch (e) {
+      msg.textContent = e.message; msg.className = "msg err";
+      btn.disabled = false;
+    }
+  }
+  document.getElementById("password").addEventListener("keydown", e => { if (e.key === "Enter") doLogin(); });
+</script>
+</body>
+</html>

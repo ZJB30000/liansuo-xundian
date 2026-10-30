@@ -15,5 +15,11 @@ fastapi>=0.110        # Web 框架
 uvicorn>=0.29         # ASGI 服务器
 httpx>=0.27           # fastapi TestClient 依赖（接口测试用）
 
+# 阶段3 管理后台（登录鉴权 / 知识库管理 / 提示词模板 / 对话审计）
+pyjwt>=2.8            # JWT 签发与校验
+pypdf>=4.0            # PDF 制度文档文本提取
+jinja2>=3.1           # 管理后台服务端渲染
+python-multipart>=0.0.9   # 文件上传表单解析
+
 # 测试
 pytest>=7.4.0

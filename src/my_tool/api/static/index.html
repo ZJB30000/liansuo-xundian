@@ -50,6 +50,10 @@ const sendBtn = document.getElementById("send");
 let sessionId = localStorage.getItem("chat_session_id") || "";  // 刷新不丢会话
 let busy      = false;
 
+/* 阶段3：/api/chat 需要登录，未登录跳登录页 */
+const TOKEN = localStorage.getItem("chat_token");
+if (!TOKEN) { location.href = "/login"; }
+
 /* 打字机队列：delta 先入缓冲，定时器逐字上屏，形成打字机效果 */
 let pendingText = "";
 let typingTimer = null;
@@ -104,10 +108,11 @@ async function ask() {
   try {
     const res = await fetch("/api/chat", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "Authorization": "Bearer " + TOKEN },
       body: JSON.stringify({ session_id: sessionId || undefined, question }),
     });
 
+    if (res.status === 401 || res.status === 403) { location.href = "/login"; return; }
     if (!res.ok) {                                      // 校验/服务错误：JSON {code,message}
       const err = await res.json().catch(() => ({ code: "INTERNAL_ERROR", message: "服务器内部错误，请联系管理员" }));
       showError(err.message); return;
