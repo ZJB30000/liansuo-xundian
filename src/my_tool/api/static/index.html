@@ -29,6 +29,11 @@
   #send:disabled { background: #9db8a6; cursor: not-allowed; }
   .hint { font-size: 12px; color: #8a9a8e; margin: 6px 0 0 2px; }
   .hint em { font-style: normal; background: #e5eee8; border-radius: 4px; padding: 2px 6px; margin-right: 6px; cursor: pointer; }
+  /* 阶段4：智能体工具调用过程行 */
+  .step { font-size: 12px; color: #1e5c3a; background: #eef5f0; border-left: 3px solid #1e5c3a; padding: 4px 8px; margin: 6px 0; border-radius: 0 6px 6px 0; }
+  .step.fail { color: #b42323; background: #fdecec; border-left-color: #b42323; }
+  .agent-switch { font-size: 13px; color: #1e5c3a; display: flex; align-items: center; gap: 6px; user-select: none; cursor: pointer; white-space: nowrap; }
+  .agent-switch input { accent-color: #1e5c3a; cursor: pointer; }
 </style>
 </head>
 <body>
@@ -36,7 +41,9 @@
 <div id="chat"></div>
 <footer>
   <div style="flex:1">
-    <div class="hint">试试：<em>留样冰箱要上锁吗？</em><em>培训签到算不算学会？</em><em>整改照片能代替复查吗？</em></div>
+    <div class="hint">试试：<em>留样冰箱要上锁吗？</em><em>帮 XD-2026-0003 建整改单</em><em>整改照片能代替复查吗？</em>
+      <label class="agent-switch"><input type="checkbox" id="agentMode"> 智能体模式（自主调工具）</label>
+    </div>
     <input id="q" placeholder="输入巡店制度问题，回车发送" autocomplete="off">
   </div>
   <button id="send">发送</button>
@@ -47,6 +54,7 @@
 const chatBox = document.getElementById("chat");
 const qBox    = document.getElementById("q");
 const sendBtn = document.getElementById("send");
+const agentToggle = document.getElementById("agentMode");   // 阶段4：智能体开关
 let sessionId = localStorage.getItem("chat_session_id") || "";  // 刷新不丢会话
 let busy      = false;
 
@@ -102,14 +110,18 @@ async function ask() {
   addUserBubble(question);                              // 用户气泡
   const bubble = addAssistantBubble();                  // 助手气泡（含状态行）
   const statusEl  = bubble.querySelector(".status");
-  const contentEl = bubble.querySelector(".content");
+  const contentEl = bubble.querySelector(".text");      // 打字机只写 .text，不覆盖工具步骤行
   contentEl.classList.add("typing");                    // 打字机光标
 
   try {
     const res = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json", "Authorization": "Bearer " + TOKEN },
-      body: JSON.stringify({ session_id: sessionId || undefined, question }),
+      body: JSON.stringify({
+        session_id: sessionId || undefined,
+        question,
+        agent_mode: agentToggle.checked,     // 阶段4：智能体模式开关
+      }),
     });
 
     if (res.status === 401 || res.status === 403) { location.href = "/login"; return; }
@@ -140,6 +152,15 @@ async function ask() {
           localStorage.setItem("chat_session_id", sessionId);
         } else if (ev.event === "status") {
           statusEl.textContent = ev.data.text;          // “正在检索巡店制度…”
+        } else if (ev.event === "tool") {               // 阶段4：工具调用过程行
+          statusEl.textContent = "正在调用工具…";
+          const step = document.createElement("div");
+          step.className = "step" + (ev.data.ok ? "" : " fail");
+          step.textContent = (ev.data.ok ? "🔧 " : "⚠️ ") + ev.data.name + "：" + ev.data.summary;
+          bubble.querySelector(".content").insertBefore(step, statusEl);
+          scrollBottom();
+        } else if (ev.event === "fallback") {           // 阶段4：降级回退提示
+          statusEl.textContent = ev.data.reason;
         } else if (ev.event === "delta") {
           statusEl.textContent = "";
           pendingText += ev.data.text;                  // 进打字机缓冲
@@ -171,7 +192,7 @@ function addUserBubble(text) {
 function addAssistantBubble() {
   const div = document.createElement("div");
   div.className = "msg assistant";
-  div.innerHTML = '<div class="content"></div><div class="status"></div><div class="sources" style="display:none"></div>';
+  div.innerHTML = '<div class="content"><span class="text"></span></div><div class="status"></div><div class="sources" style="display:none"></div>';
   chatBox.appendChild(div); scrollBottom();
   return div;
 }

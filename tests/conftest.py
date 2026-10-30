@@ -5,6 +5,7 @@
 
 import os
 import sys
+from types import SimpleNamespace
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
@@ -20,12 +21,15 @@ DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "data")
 
 # 假流式 LLM 会把收到的完整提示词记录在这里，供“模板立即生效”用例断言
 CAPTURED_PROMPTS: list = []
+# 假单步 Agent 会把收到的完整消息列表记录在这里，供 Agent 循环用例断言
+CAPTURED_AGENT_MESSAGES: list = []
 
 
 @pytest.fixture(autouse=True)
 def _clear_captured():
-    """每个测试清空提示词捕获，避免串扰。"""
+    """每个测试清空捕获，避免串扰。"""
     CAPTURED_PROMPTS.clear()
+    CAPTURED_AGENT_MESSAGES.clear()
     yield
 
 
@@ -42,6 +46,52 @@ def _fake_stream(prompt, chat_cfg):
     yield "按制度要求，"
     yield "留样必须冷藏并上锁，"
     yield "钥匙由店长保管。"
+
+
+# ============================================================
+# 阶段4：假单步 Agent（Function Calling）
+# ============================================================
+class FakeToolCall:
+    """OpenAI tool_call 的最小替身：id / function.name / function.arguments。"""
+
+    def __init__(self, name: str, arguments: dict):
+        self.id = "call_" + name
+        self.function = SimpleNamespace(
+            name=name, arguments=__import__("json").dumps(arguments, ensure_ascii=False))
+
+    def model_dump(self):
+        return {"id": self.id, "type": "function",
+                "function": {"name": self.function.name, "arguments": self.function.arguments}}
+
+
+class FakeAgentMsg:
+    """assistant 消息替身：要么带 tool_calls，要么带最终 content。"""
+
+    def __init__(self, content=None, tool_calls=None):
+        self.content = content
+        self.tool_calls = tool_calls
+
+
+def fake_agent_step_fn(decide):
+    """按 decide(messages) 动态决策的假单步模型；decide 返回
+    ("tool", name, args) / ("answer", text) / ("boom",)。"""
+    def _step(messages, chat_cfg, tools):
+        CAPTURED_AGENT_MESSAGES.append(messages)
+        action = decide(messages)
+        if action[0] == "answer":
+            return FakeAgentMsg(content=action[1])
+        if action[0] == "boom":
+            raise RuntimeError("模拟模型不支持 tools 参数")
+        return FakeAgentMsg(tool_calls=[FakeToolCall(action[1], action[2])])
+    return _step
+
+
+def last_tool_result(messages: list):
+    """取消息列表里最近一条 role=tool 的结果（假模型决策依据）。"""
+    for m in reversed(messages):
+        if m.get("role") == "tool":
+            return __import__("json").loads(m["content"])
+    return None
 
 
 @pytest.fixture()

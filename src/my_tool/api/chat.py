@@ -13,7 +13,9 @@ from fastapi.responses import StreamingResponse
 from openai import APITimeoutError
 
 from my_tool.agents import llm_gateway
+from my_tool.agents.agent_loop import run_agent_loop
 from my_tool.agents.prompts import RULE_SUFFIX, build_prompt
+from my_tool.agents.tools import ToolContext
 from my_tool.api import db, kb_store
 from my_tool.api.errors import ApiError
 from my_tool.api.kb_runtime import ensure_kb
@@ -97,7 +99,11 @@ def _event_stream(question: str, sid: str, kb, chat_cfg: dict, rules: str) -> Ge
 
 @router.post("/api/chat")
 async def chat(request: Request, user: dict = Depends(get_current_user)):
-    """对话入口：先完成全部校验（错误以 HTTP 状态码返回），再进入 SSE。"""
+    """对话入口：先完成全部校验（错误以 HTTP 状态码返回），再进入 SSE。
+
+    agent_mode=true 走智能体循环（模型自主调工具：查制度/查记录/证据校验/建草稿），
+    默认 false 走阶段2 固定流程问答。
+    """
     try:
         body = await request.json()
     except json.JSONDecodeError:
@@ -107,6 +113,7 @@ async def chat(request: Request, user: dict = Depends(get_current_user)):
 
     question = _validate_question(body.get("question"))
     sid = _locate_session(body.get("session_id"), user["user_id"])
+    agent_mode = body.get("agent_mode") is True
 
     try:
         ensure_kb(request.app)          # 首次访问/版本变化时构建知识库（懒加载）
@@ -121,13 +128,42 @@ async def chat(request: Request, user: dict = Depends(get_current_user)):
     except SystemExit:
         raise ApiError(503, "LLM_NOT_CONFIGURED", "未配置向量模型（EMBED_BASE_URL / EMBED_MODEL）")
 
-    # 系统提示词：数据库里管理员维护的模板 + 不可违背的输出红线
-    rules = kb_store.get_prompt() + RULE_SUFFIX
+    # 系统提示词：数据库里管理员维护的模板；固定流程再拼输出格式红线
+    template = kb_store.get_prompt()
 
     # 用户消息落库：命中“规避检查”关键词则标记疑似违规（审计页标红）
     db.add_message(sid, "user", question, flagged=scan(question))
+
+    if agent_mode:
+        headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+        return StreamingResponse(
+            _agent_stream(question, sid, kb, chat_cfg, template, user["user_id"]),
+            media_type="text/event-stream", headers=headers,
+        )
     return StreamingResponse(
-        _event_stream(question, sid, kb, chat_cfg, rules),
+        _event_stream(question, sid, kb, chat_cfg, template + RULE_SUFFIX),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+def _agent_stream(question: str, sid: str, kb, chat_cfg: dict, template: str,
+                  user_id: int) -> Generator[str, None, None]:
+    """智能体模式的 SSE 主体：转发 agent_loop 事件；answer 落库后模拟打字机输出。"""
+    yield _sse("session", {"session_id": sid})
+    yield _sse("status", {"text": "智能体已启动，正在决策…"})
+    ctx = ToolContext(kb, user_id)
+    history = db.recent_messages(sid, HISTORY_ROUNDS * 2)
+    for event, data in run_agent_loop(question, kb, chat_cfg, ctx,
+                                      history=history, rules=template):
+        if event != "answer":
+            yield _sse(event, data)
+            continue
+        text = data["text"]
+        sources = data["sources"]
+        message_id = db.add_message(sid, "assistant", text,
+                                    json.dumps(sources, ensure_ascii=False))
+        for i in range(0, len(text), 2):        # 非流式全量回答按 2 字/帧模拟打字机
+            yield _sse("delta", {"text": text[i:i + 2]})
+        yield _sse("sources", {"items": sources})
+        yield _sse("done", {"message_id": message_id})

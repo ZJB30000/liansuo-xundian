@@ -88,6 +88,24 @@ def llm_chat_stream(prompt: str, chat_cfg: dict):
             yield chunk.choices[0].delta.content
 
 
+def llm_agent_step(messages: list, chat_cfg: dict, tools: list):
+    """带工具表的单步对话（阶段4 Agent 循环用，非流式便于解析 tool_calls）。
+
+    传入完整消息列表（含 system / tool 结果）与 TOOL_SCHEMAS，返回 assistant
+    消息对象：要么含 content（最终回答），要么含 tool_calls（模型要求调工具）。
+    免费模型不支持 tools 参数时会抛异常，由调用方降级回固定流程。
+    """
+    client = OpenAI(base_url=chat_cfg["base_url"], api_key=chat_cfg["api_key"])
+    resp = client.chat.completions.create(
+        model=chat_cfg["model"],
+        messages=messages,
+        temperature=0,
+        tools=tools,
+        timeout=30,
+    )
+    return resp.choices[0].message
+
+
 def embed_texts(texts: list, embed_cfg: dict) -> np.ndarray:
     """把一批文本转向量，返回 numpy 矩阵（每行一个向量，已做 L2 归一化）。
 
