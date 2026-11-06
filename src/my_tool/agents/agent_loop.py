@@ -32,6 +32,7 @@ from my_tool.agents import llm_gateway          # 模块属性访问，测试可
 from my_tool.agents.prompts import build_prompt
 from my_tool.agents.tools import TOOL_SCHEMAS, ToolContext, run_tool
 from my_tool.api import db
+from my_tool.core.prompt_guard import DEFENSE_NOTE, detect_injection
 from my_tool.services.kb_service import hybrid_search
 
 MAX_TOOL_ROUNDS = 5          # 熔断：单次会话最多 5 轮工具决策（提示词7 硬性要求）
@@ -228,6 +229,11 @@ def run_agent_loop(question: str, kb, chat_cfg: dict, ctx: ToolContext,
     if rules:
         system += "\n\n管理员补充要求：\n" + rules
     messages = [{"role": "system", "content": system}]
+    # 注入防护（提示词9 第 16 项）：命中注入模式就在系统提示词后追加防御声明。
+    # 放在 system 层而不是拼进用户消息——让"用户在说什么"与"什么不可信"分层，
+    # 模型不易把防御声明当成用户话术的一部分；硬防线（令牌/HITL）不受任何输入影响
+    if detect_injection(question):
+        messages.append({"role": "system", "content": DEFENSE_NOTE})
     for m in history or []:
         messages.append({"role": m["role"], "content": m["content"]})
     messages.append({"role": "user", "content": question})

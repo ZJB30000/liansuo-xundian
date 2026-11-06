@@ -14,6 +14,8 @@
 
 import json
 
+from openai import APITimeoutError
+
 from tests.conftest import (CAPTURED_AGENT_MESSAGES, CAPTURED_PROMPTS, auth,
                             fake_agent_step_fn, last_tool_result)
 from my_tool.agents import llm_gateway
@@ -302,3 +304,23 @@ def test_confirm_expired(client, staff_token, monkeypatch):
     assert res.status_code == 410
     assert res.json()["code"] == "CONFIRM_EXPIRED"
     assert draft_count() == 0
+
+
+# ============================================================
+# 用例10：LLM 超时兜底（提示词9 检查清单第 11 项）
+# ============================================================
+def test_agent_llm_timeout_returns_error_event(client, staff_token, monkeypatch):
+    """模型决策超时 → 用户收到中文超时提示（LLM_TIMEOUT 事件），不崩溃不白屏。
+
+    超时不降级到固定流程是有意的：LLM 都超时了，固定流程同样会超时，
+    重试一次只会更慢——直接给用户明确的"请重试"信号。
+    """
+    def _timeout_step(messages, chat_cfg, tools):
+        raise APITimeoutError(request=None)
+    monkeypatch.setattr(llm_gateway, "llm_agent_step", _timeout_step)
+    events = ask(client, staff_token, "留样要留多少克？")
+
+    errors = [d for e, d in events if e == "error"]
+    assert errors and errors[0]["code"] == "LLM_TIMEOUT"
+    assert "超时" in errors[0]["message"]
+    assert not any(e == "fallback" for e, _ in events)   # 超时不走降级，直接报错

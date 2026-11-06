@@ -22,7 +22,9 @@ from my_tool.api import db, kb_store
 from my_tool.api.errors import ApiError
 from my_tool.api.kb_runtime import ensure_kb
 from my_tool.api.moderation import scan
+from my_tool.api.ratelimit import rate_limiter
 from my_tool.api.security import get_current_user
+from my_tool.core.prompt_guard import DEFENSE_NOTE, detect_injection
 from my_tool.services.kb_service import hybrid_search
 
 router = APIRouter(dependencies=[Depends(get_current_user)])   # 整组接口需登录
@@ -73,6 +75,14 @@ def _prepare(request: Request) -> tuple:
     except SystemExit:
         raise ApiError(503, "LLM_NOT_CONFIGURED", "未配置向量模型（EMBED_BASE_URL / EMBED_MODEL）")
     return request.app.state.kb, chat_cfg
+
+
+def _releasing(gen, user_id: int) -> Generator[str, None, None]:
+    """包一层生成器：流结束（含异常/客户端断连）时归还限流额度。"""
+    try:
+        yield from gen
+    finally:
+        rate_limiter.release(user_id)
 
 
 def _event_stream(question: str, sid: str, kb, chat_cfg: dict, rules: str) -> Generator[str, None, None]:
@@ -132,6 +142,11 @@ async def chat(request: Request, user: dict = Depends(get_current_user)):
     sid = _locate_session(body.get("session_id"), user["user_id"])
     agent_mode = body.get("agent_mode") is True
 
+    # 同用户并发限流（提示词9）：拿不到额度直接 429，不排队（SSE 长连接排队会积压）
+    if not rate_limiter.acquire(user["user_id"]):
+        raise ApiError(429, "RATE_LIMITED",
+                       "您有一条回答正在生成中，请等待完成后再提问")
+
     kb, chat_cfg = _prepare(request)
 
     # 系统提示词：数据库里管理员维护的模板；固定流程再拼输出格式红线
@@ -143,11 +158,18 @@ async def chat(request: Request, user: dict = Depends(get_current_user)):
     if agent_mode:
         headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
         return StreamingResponse(
-            _agent_stream(question, sid, kb, chat_cfg, template, user["user_id"]),
+            _releasing(_agent_stream(question, sid, kb, chat_cfg, template,
+                                     user["user_id"]), user["user_id"]),
             media_type="text/event-stream", headers=headers,
         )
+    # 注入防护（提示词9）：固定流程命中注入模式时，把防御声明拼进规则段，
+    # 与管理员模板一起约束生成；智能体模式的防御在 agent_loop 里做
+    rules = template + RULE_SUFFIX
+    if detect_injection(question):
+        rules += "\n\n" + DEFENSE_NOTE
     return StreamingResponse(
-        _event_stream(question, sid, kb, chat_cfg, template + RULE_SUFFIX),
+        _releasing(_event_stream(question, sid, kb, chat_cfg, rules),
+                   user["user_id"]),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
