@@ -34,6 +34,17 @@
   .step.fail { color: #b42323; background: #fdecec; border-left-color: #b42323; }
   .agent-switch { font-size: 13px; color: #1e5c3a; display: flex; align-items: center; gap: 6px; user-select: none; cursor: pointer; white-space: nowrap; }
   .agent-switch input { accent-color: #1e5c3a; cursor: pointer; }
+  /* 阶段5：建单确认卡片（HITL 强制中断的人工确认环节） */
+  .confirm-card { margin: 8px 0; border: 1px solid #1e5c3a; border-radius: 8px; overflow: hidden; font-size: 13px; }
+  .cc-title { background: #1e5c3a; color: #fff; padding: 6px 10px; font-weight: 600; }
+  .cc-row { padding: 5px 10px; border-top: 1px dashed #d7e3da; color: #33443a; line-height: 1.6; }
+  .cc-row span { display: inline-block; width: 64px; color: #8a9a8e; }
+  .cc-btns { display: flex; gap: 10px; padding: 8px 10px; border-top: 1px dashed #d7e3da; }
+  .cc-btns button { flex: 1; padding: 7px 0; border: 0; border-radius: 6px; font-size: 13px; cursor: pointer; }
+  .cc-ok { background: #1e5c3a; color: #fff; }
+  .cc-no { background: #fdecec; color: #b42323; border: 1px solid #f5c2c2 !important; }
+  .cc-btns button:disabled { opacity: .5; cursor: not-allowed; }
+  .cc-state { padding: 4px 10px 8px; font-size: 12px; color: #8a9a8e; }
 </style>
 </head>
 <body>
@@ -129,56 +140,113 @@ async function ask() {
       const err = await res.json().catch(() => ({ code: "INTERNAL_ERROR", message: "服务器内部错误，请联系管理员" }));
       showError(err.message); return;
     }
+    await readAgentStream(res, bubble, statusEl, contentEl);
+  } catch (e) {
+    showError("网络异常，请检查服务是否已启动");
+  }
+}
 
-    /* 流式读取 SSE */
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder("utf-8");
-    let buffer = "", streamDone = false, sources = null;
+/* ---------- 读流：首问与确认恢复共用（提示词7 抽出） ----------
+   消费 SSE 事件并驱动界面；遇 confirm_request 时渲染确认卡片并挂起
+   （此时不解锁发送按钮，等确认流程结束后统一收尾）。 */
+async function readAgentStream(res, bubble, statusEl, contentEl) {
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder("utf-8");
+  let buffer = "", streamDone = false, sources = null, awaitingConfirm = false;
 
-    const finish = () => {
-      if (sources) renderSources(bubble, sources);      // 回答底部渲染引用来源
-      busy = false; sendBtn.disabled = false; qBox.focus();
-    };
+  const finish = () => {
+    if (sources) renderSources(bubble, sources);      // 回答底部渲染引用来源
+    if (!awaitingConfirm) { busy = false; sendBtn.disabled = false; qBox.focus(); }
+  };
 
-    while (!streamDone) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const { events, rest } = parseSse(buffer);
-      buffer = rest;
-      for (const ev of events) {
-        if (ev.event === "session") {                   // 记住会话ID
-          sessionId = ev.data.session_id;
-          localStorage.setItem("chat_session_id", sessionId);
-        } else if (ev.event === "status") {
-          statusEl.textContent = ev.data.text;          // “正在检索巡店制度…”
-        } else if (ev.event === "tool") {               // 阶段4：工具调用过程行
-          statusEl.textContent = "正在调用工具…";
-          const step = document.createElement("div");
-          step.className = "step" + (ev.data.ok ? "" : " fail");
-          step.textContent = (ev.data.ok ? "🔧 " : "⚠️ ") + ev.data.name + "：" + ev.data.summary;
-          bubble.querySelector(".content").insertBefore(step, statusEl);
-          scrollBottom();
-        } else if (ev.event === "fallback") {           // 阶段4：降级回退提示
-          statusEl.textContent = ev.data.reason;
-        } else if (ev.event === "delta") {
-          statusEl.textContent = "";
-          pendingText += ev.data.text;                  // 进打字机缓冲
-        } else if (ev.event === "sources") {
-          sources = ev.data.items;
-        } else if (ev.event === "error") {
-          statusEl.textContent = "";
-          contentEl.classList.remove("typing");
-          showError(ev.data.message); streamDone = true;
-        } else if (ev.event === "done") {
-          streamDone = true;
-        }
+  while (!streamDone) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const { events, rest } = parseSse(buffer);
+    buffer = rest;
+    for (const ev of events) {
+      if (ev.event === "session") {                   // 记住会话ID
+        sessionId = ev.data.session_id;
+        localStorage.setItem("chat_session_id", sessionId);
+      } else if (ev.event === "status") {
+        statusEl.textContent = ev.data.text;          // “正在检索巡店制度…”
+      } else if (ev.event === "tool") {               // 阶段4：工具调用过程行
+        statusEl.textContent = "正在调用工具…";
+        const step = document.createElement("div");
+        step.className = "step" + (ev.data.ok ? "" : " fail");
+        step.textContent = (ev.data.ok ? "🔧 " : "⚠️ ") + ev.data.name + "：" + ev.data.summary;
+        bubble.querySelector(".content").insertBefore(step, statusEl);
+        scrollBottom();
+      } else if (ev.event === "fallback") {           // 阶段4：降级回退提示
+        statusEl.textContent = ev.data.reason;
+      } else if (ev.event === "confirm_request") {    // 阶段5：建单前强制确认（HITL）
+        statusEl.textContent = "";
+        contentEl.classList.remove("typing");
+        renderConfirmCard(bubble, ev.data, statusEl, contentEl);
+        awaitingConfirm = true;                       // 首段流结束，但不解锁：等确认
+      } else if (ev.event === "delta") {
+        statusEl.textContent = "";
+        pendingText += ev.data.text;                  // 进打字机缓冲
+      } else if (ev.event === "sources") {
+        sources = ev.data.items;
+      } else if (ev.event === "error") {
+        statusEl.textContent = "";
+        contentEl.classList.remove("typing");
+        showError(ev.data.message); streamDone = true;
+      } else if (ev.event === "done") {
+        streamDone = true;
       }
     }
-    contentEl.dataset.eof = "1";                        // 通知打字机可以收尾
-    if (!pendingText) { contentEl.classList.remove("typing"); finish(); }
-    else { const t = setInterval(() => { if (contentEl.dataset.eof === "1" && !pendingText) { clearInterval(t); finish(); } }, 50); }
+  }
+  contentEl.dataset.eof = "1";                        // 通知打字机可以收尾
+  if (!pendingText) { contentEl.classList.remove("typing"); finish(); }
+  else { const t = setInterval(() => { if (contentEl.dataset.eof === "1" && !pendingText) { clearInterval(t); finish(); } }, 50); }
+}
+
+/* ---------- 建单确认卡片：把草稿内容展示给员工，确认后才执行 ---------- */
+function renderConfirmCard(bubble, data, statusEl, contentEl) {
+  const p = data.preview || {};
+  const card = document.createElement("div");
+  card.className = "confirm-card";
+  card.innerHTML =
+    '<div class="cc-title">📋 创建整改单草稿前请确认（人工确认环节）</div>' +
+    '<div class="cc-row"><span>巡检单</span>' + (p.record_id || "-") + "</div>" +
+    '<div class="cc-row"><span>门店</span>' + (p.store_id || "-") + "</div>" +
+    '<div class="cc-row"><span>问题描述</span>' + (p.description || "-") + "</div>" +
+    '<div class="cc-row"><span>归类建议</span>' + (p.category || "待归类") + "</div>" +
+    '<div class="cc-row"><span>严重度</span>' + (p.severity || "待定级") + "</div>" +
+    '<div class="cc-row"><span>整改建议</span>' + (p.advice || "-") + "</div>" +
+    '<div class="cc-btns"><button class="cc-ok">确认建单</button><button class="cc-no">拒绝</button></div>';
+  bubble.querySelector(".content").appendChild(card);
+  scrollBottom();
+  card.querySelector(".cc-ok").onclick = () => sendConfirm(data.token, true, card, statusEl, contentEl);
+  card.querySelector(".cc-no").onclick = () => sendConfirm(data.token, false, card, statusEl, contentEl);
+}
+
+/* ---------- 确认/拒绝 → POST /api/chat/confirm → 恢复读流 ---------- */
+async function sendConfirm(token, approve, card, statusEl, contentEl) {
+  card.querySelectorAll("button").forEach(b => b.disabled = true);   // 防重复点击
+  card.insertAdjacentHTML("beforeend",
+    '<div class="cc-state">' + (approve ? "已确认，正在创建整改单草稿…" : "已拒绝，助手将取消本次建单…") + "</div>");
+  contentEl.dataset.eof = "";                         // 重新打开打字机收尾开关
+  contentEl.classList.add("typing");
+  startTyping(contentEl);                             // 恢复流的 delta 继续走同一打字机
+  try {
+    const res = await fetch("/api/chat/confirm", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Authorization": "Bearer " + TOKEN },
+      body: JSON.stringify({ token, approve }),
+    });
+    if (res.status === 401 || res.status === 403) { location.href = "/login"; return; }
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ code: "INTERNAL_ERROR", message: "服务器内部错误，请联系管理员" }));
+      contentEl.classList.remove("typing");
+      showError(err.message); return;
+    }
+    await readAgentStream(res, card.closest(".msg"), statusEl, contentEl);
   } catch (e) {
+    contentEl.classList.remove("typing");
     showError("网络异常，请检查服务是否已启动");
   }
 }
