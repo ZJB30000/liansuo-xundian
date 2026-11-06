@@ -147,13 +147,19 @@ async def chat(request: Request, user: dict = Depends(get_current_user)):
         raise ApiError(429, "RATE_LIMITED",
                        "您有一条回答正在生成中，请等待完成后再提问")
 
-    kb, chat_cfg = _prepare(request)
+    # acquire 之后、流开始之前的一切初始化若失败，必须先归还额度再抛错，
+    # 否则失败请求会永久占用 1 个并发额度（B-07 真机复现：503 泄漏后全 429）
+    try:
+        kb, chat_cfg = _prepare(request)
 
-    # 系统提示词：数据库里管理员维护的模板；固定流程再拼输出格式红线
-    template = kb_store.get_prompt()
+        # 系统提示词：数据库里管理员维护的模板；固定流程再拼输出格式红线
+        template = kb_store.get_prompt()
 
-    # 用户消息落库：命中“规避检查”关键词则标记疑似违规（审计页标红）
-    db.add_message(sid, "user", question, flagged=scan(question))
+        # 用户消息落库：命中“规避检查”关键词则标记疑似违规（审计页标红）
+        db.add_message(sid, "user", question, flagged=scan(question))
+    except Exception:
+        rate_limiter.release(user["user_id"])
+        raise
 
     if agent_mode:
         headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
