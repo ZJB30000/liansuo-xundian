@@ -73,6 +73,25 @@ pip install -r requirements.txt
 PYTHONPATH=src pytest -q
 ```
 
+### 4.1 src 交付对照（问答助手归档 + MVP）
+
+| 要求 | 落地 | 查证方式 |
+|---|---|---|
+| 问答助手归档 | 阶段2 完整可运行的问答助手（RAG 问答 + SSE 流式 + 出处引用 + BM25 降级）归档于 git 标签 **`qa-assistant-v1`**；其能力同时保留为当前代码的降级路径（LLM 不可用时自动切回固定流程问答） | `git checkout qa-assistant-v1` 即可回到该版本运行 |
+| MVP：工程架构 | 分层架构：api（接口/鉴权/SSE）· agents（编排）· services（检索）· core（规则）· utils | `src/my_tool/` 五个模块与 tests/ 一一对应 |
+| MVP：Agent 框架 | 自研 Harness 循环：模型决策 → 工具执行 → 结果回填 → 再决策，最多 5 轮熔断 | `agents/agent_loop.py`；tests/test_agent.py |
+| MVP：知识库 | 制度文档切片 + FAISS 向量 + BM25 关键词混合检索（RRF 融合），向量接口不可用自动降级 | `services/kb_service.py`；tests/test_rag.py |
+| MVP：人工确认/审核点（≥3 处） | 见下表，共 **4 处** | 每处均有对应测试与真机验证 |
+
+**人工确认/审核点（4 处）：**
+
+| # | 环节 | 位置 | 测试 |
+|---|---|---|---|
+| 1 | 建整改单前强制确认（HITL）：AI 只能出草稿预览，员工点「确认建单」后才创建 | `agents/agent_loop.py`（挂起）+ `api/chat.py /api/chat/confirm` | tests/test_agent.py 三段式用例 |
+| 2 | 证据校验门禁：无有效一次性证据令牌一律拒绝建单 | `agents/tools.py:validate_evidence / create_rectification_draft` | tests/test_agent_tools.py |
+| 3 | 草稿提交人工审核：定级与处置由人工完成，AI 不自动裁决 | `agents/tools.py:submit_for_review` | tests/test_agent_tools.py |
+| 4 | 管理后台审计：管理员复核对话与违规标红、规则版本由人工升版 | `api/templates/admin/` | tests/test_admin.py |
+
 ### 5. 目录结构
 
 ```text
