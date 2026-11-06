@@ -2,6 +2,18 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)：主版本号.次版本号.修订号。
 
+## [0.5.0] - 2026-11-06
+
+### 新增（阶段5：Agent 编排 → 评测 → 上线检查 → 结构整理，老师提示词 7~10）
+- **Agent Harness**（提示词7）`agents/agent_loop.py`：模型决策→执行工具→结果回填→再决策，最多 5 轮熔断；每轮落 `agent_logs`（工具名/参数/耗时/结果摘要）；`create_rectification_draft` 调用前 HITL 强制中断——SSE 推 `confirm_request`（草稿预览+一次性令牌），员工确认后经 `POST /api/chat/confirm` 恢复执行；前端确认卡片（确认/拒绝）
+- **项目评测**（提示词8）`data/eval_cases.json` 30 条评测用例（制度/工具调用/违规意图/多轮上下文，含 3 条陷阱题）+ `scripts/run_eval.py` 评测运行器（工具序列判定+关键词断言+`--strict` 门禁）+ 真机 glm-4-flash 评测报告 `docs/eval_report.md`（22/30，评测抓出 2 个真实弱点）
+- **上线检查**（提示词9）`docs/launch_checklist.md` 25 项（5 维度×5 项，每项含负责人/验证方法/通过标准/状态，达标 17/25）；落地：`core/prompt_guard.py` 注入防护（4 类模式检测+防御声明）、`api/ratelimit.py` 同用户并发限流（429）、LLM 超时兜底测试；测试增至 105 项
+- **结构整理**（提示词10）：仓库更名 `liansuo-xundian`，报销原型与早期流程图归档 `archive/`，主 README 重写为上交门面
+
+### 变更
+- `api/chat.py`：限流接入、注入防御双路接入（智能体/固定流程）、answer 事件转打字机 delta
+- 轮数熔断上限 8 → 5；种子巡检记录调整为证据完整性梯度（0001 缺温度/0002 缺照片/0003、0004 齐全）
+
 ## [Unreleased]
 
 ### 计划
