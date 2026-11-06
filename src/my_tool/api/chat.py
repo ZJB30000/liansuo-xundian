@@ -1,19 +1,21 @@
-"""POST /api/chat：SSE 流式问答接口（★阶段3 改造：登录鉴权+违规标记+库内模板）。
+"""POST /api/chat 与 /api/chat/confirm：SSE 流式问答接口。
 
-流程：JWT 鉴权 → 校验 → 定位/新建会话（归属员工）→ 存用户消息（触发疑似
-违规扫描）→ 检索巡店制度 → 流式调大模型 → 存助手消息 → sources/done 事件。
+阶段3：JWT 鉴权 + 违规标记 + 库内模板；阶段4：agent_mode 智能体循环；
+阶段5（提示词7）：/api/chat/confirm 确认恢复接口——建单前 Harness 挂起，
+员工确认后从这里恢复执行（HITL：Human-in-the-loop）。
 系统提示词从数据库读取（管理员可改，立即生效）；输出格式红线拼在模板后。
 """
 
 import json
 from collections.abc import Generator
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 from openai import APITimeoutError
 
 from my_tool.agents import llm_gateway
-from my_tool.agents.agent_loop import run_agent_loop
+from my_tool.agents.agent_loop import resume_agent_loop, run_agent_loop
 from my_tool.agents.prompts import RULE_SUFFIX, build_prompt
 from my_tool.agents.tools import ToolContext
 from my_tool.api import db, kb_store
@@ -56,6 +58,21 @@ def _locate_session(raw, user_id: int) -> str:
     if not db.has_conversation(raw):
         raise ApiError(404, "SESSION_NOT_FOUND", "会话不存在，请刷新页面重新开始")
     return raw
+
+
+def _prepare(request: Request) -> tuple:
+    """懒加载知识库 + 读取模型配置（/api/chat 与 /api/chat/confirm 共用）。"""
+    try:
+        ensure_kb(request.app)          # 首次访问/版本变化时构建知识库（懒加载）
+    except Exception:
+        raise ApiError(503, "KB_NOT_READY", "知识库未就绪，请检查 LLM_API_KEY 与制度文档")
+    try:
+        chat_cfg, _ = llm_gateway.load_config()
+    except KeyError:
+        raise ApiError(503, "LLM_NOT_CONFIGURED", "未配置 LLM_API_KEY 环境变量，无法调用大模型")
+    except SystemExit:
+        raise ApiError(503, "LLM_NOT_CONFIGURED", "未配置向量模型（EMBED_BASE_URL / EMBED_MODEL）")
+    return request.app.state.kb, chat_cfg
 
 
 def _event_stream(question: str, sid: str, kb, chat_cfg: dict, rules: str) -> Generator[str, None, None]:
@@ -115,18 +132,7 @@ async def chat(request: Request, user: dict = Depends(get_current_user)):
     sid = _locate_session(body.get("session_id"), user["user_id"])
     agent_mode = body.get("agent_mode") is True
 
-    try:
-        ensure_kb(request.app)          # 首次访问/版本变化时构建知识库（懒加载）
-    except Exception:
-        raise ApiError(503, "KB_NOT_READY", "知识库未就绪，请检查 LLM_API_KEY 与制度文档")
-    kb = request.app.state.kb
-
-    try:
-        chat_cfg, _ = llm_gateway.load_config()
-    except KeyError:
-        raise ApiError(503, "LLM_NOT_CONFIGURED", "未配置 LLM_API_KEY 环境变量，无法调用大模型")
-    except SystemExit:
-        raise ApiError(503, "LLM_NOT_CONFIGURED", "未配置向量模型（EMBED_BASE_URL / EMBED_MODEL）")
+    kb, chat_cfg = _prepare(request)
 
     # 系统提示词：数据库里管理员维护的模板；固定流程再拼输出格式红线
     template = kb_store.get_prompt()
@@ -147,15 +153,13 @@ async def chat(request: Request, user: dict = Depends(get_current_user)):
     )
 
 
-def _agent_stream(question: str, sid: str, kb, chat_cfg: dict, template: str,
-                  user_id: int) -> Generator[str, None, None]:
-    """智能体模式的 SSE 主体：转发 agent_loop 事件；answer 落库后模拟打字机输出。"""
-    yield _sse("session", {"session_id": sid})
-    yield _sse("status", {"text": "智能体已启动，正在决策…"})
-    ctx = ToolContext(kb, user_id)
-    history = db.recent_messages(sid, HISTORY_ROUNDS * 2)
-    for event, data in run_agent_loop(question, kb, chat_cfg, ctx,
-                                      history=history, rules=template):
+def _relay_agent_events(events, sid: str) -> Generator[str, None, None]:
+    """转发 Harness 事件流；answer 落库后按 2 字/帧模拟打字机输出。
+
+    首问（run_agent_loop）与确认恢复（resume_agent_loop）共用——
+    两条路径的 answer 都要落库，且 confirm_request / tool / error 原样透传。
+    """
+    for event, data in events:
         if event != "answer":
             yield _sse(event, data)
             continue
@@ -167,3 +171,61 @@ def _agent_stream(question: str, sid: str, kb, chat_cfg: dict, template: str,
             yield _sse("delta", {"text": text[i:i + 2]})
         yield _sse("sources", {"items": sources})
         yield _sse("done", {"message_id": message_id})
+
+
+def _agent_stream(question: str, sid: str, kb, chat_cfg: dict, template: str,
+                  user_id: int) -> Generator[str, None, None]:
+    """智能体模式的 SSE 主体：启动 Harness 循环并转发事件。"""
+    yield _sse("session", {"session_id": sid})
+    yield _sse("status", {"text": "智能体已启动，正在决策…"})
+    ctx = ToolContext(kb, user_id)
+    history = db.recent_messages(sid, HISTORY_ROUNDS * 2)
+    events = run_agent_loop(question, kb, chat_cfg, ctx,
+                            history=history, rules=template, session_id=sid)
+    yield from _relay_agent_events(events, sid)
+
+
+SSE_HEADERS = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+
+
+@router.post("/api/chat/confirm")
+async def chat_confirm(request: Request, user: dict = Depends(get_current_user)):
+    """HITL 确认恢复接口（提示词7 第 3 条）：建单前强制中断的另一半。
+
+    Harness 挂起时下发了 confirm_token；员工点确认/拒绝后前端带 token 调本接口：
+    - approve=true  → 执行挂起的建单工具，继续流式输出后续过程与最终回答；
+    - approve=false → 不执行，把"用户拒绝"回填给模型，模型致歉收尾，绝不建单。
+    校验失败用 HTTP 状态码（与 /api/chat 校验口径一致），通过后进入 SSE。
+    """
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        raise ApiError(400, "BODY_NOT_JSON", "请求体不是合法 JSON")
+    if not isinstance(body, dict):
+        raise ApiError(400, "INVALID_PARAM", "请求体必须是 JSON 对象")
+
+    token = body.get("token")
+    approve = body.get("approve")
+    if not isinstance(token, str) or not token:
+        raise ApiError(400, "INVALID_PARAM", "token 必须是非空字符串")
+    if not isinstance(approve, bool):
+        raise ApiError(400, "INVALID_PARAM", "approve 必须是布尔值")
+
+    pending = db.get_agent_pending(token)
+    if pending is None:
+        raise ApiError(404, "CONFIRM_NOT_FOUND", "确认令牌不存在，可能已失效，请重新发起")
+    if pending["user_id"] != user["user_id"]:
+        raise ApiError(403, "CONFIRM_FORBIDDEN", "只能确认本人发起的整改单")
+    if pending["status"] != "awaiting_confirm":
+        raise ApiError(409, "CONFIRM_ALREADY", "该草稿已确认过，请勿重复操作")
+    # 一次性令牌限时有效：超时未确认则作废，让流程状态可预期
+    created = datetime.strptime(pending["created_at"], "%Y-%m-%d %H:%M:%S")
+    age_min = (datetime.now() - created).total_seconds() / 60
+    if age_min > db.CONFIRM_TTL_MIN:
+        db.finish_agent_session(token, "expired")
+        raise ApiError(410, "CONFIRM_EXPIRED", "确认已超时（10 分钟），请重新发起建单")
+
+    kb, chat_cfg = _prepare(request)
+    events = resume_agent_loop(pending, approve, chat_cfg, kb, user["user_id"])
+    return StreamingResponse(_relay_agent_events(events, pending["session_id"]),
+                             media_type="text/event-stream", headers=SSE_HEADERS)

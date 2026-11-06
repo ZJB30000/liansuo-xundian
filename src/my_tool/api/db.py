@@ -6,6 +6,7 @@ users（登录账号）、conversations.user_id（问答归属）、messages.fla
 """
 
 import hashlib
+import json
 import os
 import secrets
 import sqlite3
@@ -91,6 +92,29 @@ CREATE TABLE IF NOT EXISTS rectification_drafts (
     created_by INTEGER,                           -- 发起对话的员工
     created_at TEXT DEFAULT (datetime('now', 'localtime')),
     reviewed_at TEXT
+);
+CREATE TABLE IF NOT EXISTS agent_logs (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id     TEXT NOT NULL,                -- 对话会话ID（关联 conversations）
+    round          INTEGER NOT NULL,             -- 第几轮决策（1 起）
+    tool_name      TEXT NOT NULL,                -- 工具名
+    arguments_json TEXT NOT NULL,                -- 模型给出的参数原文（JSON，审计可追溯）
+    duration_ms    INTEGER NOT NULL,             -- 工具执行耗时（毫秒）
+    result_summary TEXT NOT NULL,                -- 结果中文摘要（≤200字，阶段5 分析用）
+    ok             INTEGER NOT NULL DEFAULT 1,   -- 1=成功 / 0=失败（含用户拒绝）
+    created_at     TEXT DEFAULT (datetime('now', 'localtime'))
+);
+CREATE TABLE IF NOT EXISTS agent_sessions (
+    session_id     TEXT PRIMARY KEY,             -- 对话会话ID（一次会话最多一个挂起）
+    round          INTEGER NOT NULL,             -- 挂起时的已完成轮数（恢复后续接计数）
+    messages_json  TEXT NOT NULL,                -- Harness 完整上下文（含 assistant tool_calls）
+    tool_name      TEXT NOT NULL,                -- 挂起待执行的工具（目前只会是建单）
+    tool_args_json TEXT NOT NULL,                -- 挂起待执行的参数（JSON）
+    preview_json   TEXT,                         -- 给前端展示的草稿预览（门店/归类/建议）
+    confirm_token  TEXT NOT NULL UNIQUE,         -- 一次性确认令牌（10 分钟过期）
+    status         TEXT NOT NULL DEFAULT 'awaiting_confirm',  -- awaiting_confirm/confirmed/rejected
+    user_id        INTEGER,                      -- 归属员工（恢复时校验身份，防越权替确认）
+    created_at     TEXT DEFAULT (datetime('now', 'localtime'))
 );
 """
 
@@ -352,3 +376,80 @@ def submit_draft(draft_id: int) -> None:
             "reviewed_at=datetime('now','localtime') WHERE id = ?",
             (draft_id,),
         )
+
+
+# ============================================================
+# Agent 轮次日志（阶段5 / 提示词7：每轮决策留痕，供后续分析与测评）
+# ============================================================
+def log_agent_round(session_id: str, round_no: int, tool_name: str, args: dict,
+                    duration_ms: int, summary: str, ok: bool = True) -> int:
+    """Harness 每执行一次工具就落一行：工具名、参数原文、耗时、结果摘要。"""
+    with _connect() as conn:
+        cur = conn.execute(
+            "INSERT INTO agent_logs "
+            "(session_id, round, tool_name, arguments_json, duration_ms, result_summary, ok) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (session_id, round_no, tool_name,
+             json.dumps(args, ensure_ascii=False), int(duration_ms),
+             summary[:200], 1 if ok else 0),
+        )
+    return cur.lastrowid
+
+
+def agent_logs_query(session_id: str = None, limit: int = 200) -> list:
+    """按会话筛选轮次日志（阶段5 分析入口）；session_id 为空返回最近 limit 条。"""
+    sql, params = "SELECT * FROM agent_logs WHERE 1=1", []
+    if session_id:
+        sql += " AND session_id = ?"
+        params.append(session_id)
+    sql += " ORDER BY id DESC LIMIT ?"
+    params.append(limit)
+    with _connect() as conn:
+        rows = conn.execute(sql, params).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ============================================================
+# Agent 挂起会话（提示词7 的 HITL：建单前强制中断，等员工确认）
+# ============================================================
+CONFIRM_TTL_MIN = 10   # 确认令牌有效期（分钟），与证据令牌口径一致
+
+
+def save_agent_pending(session_id: str, round_no: int, messages: list, tool_name: str,
+                       tool_args: dict, preview: dict, user_id: int) -> str:
+    """Harness 挂起：保存完整上下文与待执行工具，签发一次性确认令牌。
+
+    INSERT OR REPLACE：同一会话出现新的挂起时覆盖旧的（旧令牌自然作废）。
+    """
+    token = secrets.token_hex(16)
+    with _connect() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO agent_sessions "
+            "(session_id, round, messages_json, tool_name, tool_args_json, "
+            " preview_json, confirm_token, status, user_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, 'awaiting_confirm', ?)",
+            (session_id, round_no, json.dumps(messages, ensure_ascii=False),
+             tool_name, json.dumps(tool_args, ensure_ascii=False),
+             json.dumps(preview, ensure_ascii=False), token, user_id),
+        )
+    return token
+
+
+def get_agent_pending(token: str):
+    """按确认令牌取挂起会话；不存在返回 None。
+
+    过期/已处理不在本函数判断——接口层需要区分 404/410/409 等不同错误码，
+    这里只负责取数，判断逻辑留在调用方。
+    """
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM agent_sessions WHERE confirm_token = ?", (token,)
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def finish_agent_session(token: str, status: str) -> None:
+    """确认流程终态：confirmed（同意，即将执行）或 rejected（拒绝）。"""
+    with _connect() as conn:
+        conn.execute("UPDATE agent_sessions SET status=? WHERE confirm_token=?",
+                     (status, token))
