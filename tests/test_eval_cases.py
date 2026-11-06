@@ -124,10 +124,14 @@ def test_policy_cases_may_only_search_policy(cases):
 
 
 def test_tool_case_13_is_full_chain(cases):
-    """工具类第 13 条必须覆盖全链路六工具中的五个（建单+转人工），是任务办理类的代表。"""
+    """工具类第 13 条必须覆盖任务办理全链（校验→归类→建单→转人工）。
+
+    get_store_record 不在期望里：查记录已内置在 validate_evidence 中，
+    模型跳过显式查询属于合理优化（评测器对顺序与缺失的判定见 judge_case）。
+    """
     c13 = next(c for c in cases if c["id"] == 13)
     assert set(c13["expected_tools"]) == {
-        "get_store_record", "validate_evidence", "classify_issue",
+        "validate_evidence", "classify_issue",
         "create_rectification_draft", "submit_for_review"}
 
 
